@@ -22,7 +22,14 @@ from duck_diff.action import run_action
 from duck_diff.cli import EXIT_DRIFT, EXIT_ERROR, EXIT_OK, main
 from duck_diff.engine import DuckDiffer
 from duck_diff.io import detect_kind, load_source, parse_sqlite_uri, quote_identifier
-from duck_diff.reporter import render, render_ascii, render_terminal, to_json, to_markdown
+from duck_diff.reporter import (
+    render,
+    render_ascii,
+    render_terminal,
+    to_html,
+    to_json,
+    to_markdown,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -546,3 +553,258 @@ class TestGitHubAction:
         )
         assert code == EXIT_DRIFT
         assert outputs["schema_drift"] == "true"
+
+
+# ---------------------------------------------------------------------------
+# v1.1 — in-engine column statistical drift (Task 1)
+# ---------------------------------------------------------------------------
+
+
+class TestColumnStats:
+    A_NUM_SQL = (
+        "SELECT * FROM (VALUES "
+        "(CAST(1 AS BIGINT), CAST(10 AS DOUBLE)), "
+        "(CAST(2 AS BIGINT), CAST(20 AS DOUBLE)), "
+        "(CAST(3 AS BIGINT), CAST(30 AS DOUBLE)) "
+        ") AS t(id, v)"
+    )
+    B_NUM_SQL = (
+        "SELECT * FROM (VALUES "
+        "(CAST(1 AS BIGINT), CAST(10 AS DOUBLE)), "
+        "(CAST(2 AS BIGINT), CAST(NULL AS DOUBLE)), "
+        "(CAST(3 AS BIGINT), CAST(50 AS DOUBLE)) "
+        ") AS t(id, v)"
+    )
+
+    def test_numeric_known_shift_and_null_injection(self, tmp_path: Path) -> None:
+        pa = _write_parquet(tmp_path, "a.parquet", self.A_NUM_SQL)
+        pb = _write_parquet(tmp_path, "b.parquet", self.B_NUM_SQL)
+        result = one_shot_diff(pa, pb, keys=["id"])
+        stats = result.summary.column_stats
+        v = stats["v"]
+        assert v["kind"] == "numeric"
+        assert v["null_count_a"] == 0 and v["null_count_b"] == 1
+        assert v["null_count_diff"] == 1
+        assert v["mean_a"] == pytest.approx(20.0)
+        assert v["mean_b"] == pytest.approx(30.0)
+        assert v["mean_diff"] == pytest.approx(10.0)
+        assert v["min_a"] == pytest.approx(10.0) and v["min_b"] == pytest.approx(10.0)
+        assert v["min_diff"] == pytest.approx(0.0)
+        assert v["max_a"] == pytest.approx(30.0) and v["max_b"] == pytest.approx(50.0)
+        assert v["max_diff"] == pytest.approx(20.0)
+        assert v["mean_pct_shift"] == pytest.approx(50.0)
+
+    def test_categorical_distinct_and_null_deltas(self, tmp_path: Path) -> None:
+        a = _write_csv(tmp_path, "a.csv", "id,color\n1,x\n2,x\n3,y\n")
+        b = _write_csv(tmp_path, "b.csv", "id,color\n1,x\n2,\n3,z\n4,w\n")
+        result = one_shot_diff(a, b, keys=["id"])
+        st = result.summary.column_stats["color"]
+        assert st["kind"] == "categorical"
+        # source distinct {x,y} = 2; target {x,z,w} = 3 (NULL excluded by COUNT DISTINCT)
+        assert st["distinct_a"] == 2 and st["distinct_b"] == 3
+        assert st["distinct_count_diff"] == 1
+        assert st["null_count_a"] == 0 and st["null_count_b"] == 1
+        assert st["null_count_diff"] == 1
+
+    def test_date_column_treated_as_categorical(self, tmp_path: Path) -> None:
+        sql_a = (
+            "SELECT * FROM (VALUES "
+            "(CAST(1 AS BIGINT), CAST('2024-01-01' AS DATE)), "
+            "(CAST(2 AS BIGINT), CAST('2024-01-02' AS DATE))) t(id, d)"
+        )
+        sql_b = (
+            "SELECT * FROM (VALUES "
+            "(CAST(1 AS BIGINT), CAST('2024-01-01' AS DATE)), "
+            "(CAST(2 AS BIGINT), CAST('2024-02-01' AS DATE)), "
+            "(CAST(3 AS BIGINT), CAST('2024-03-01' AS DATE))) t(id, d)"
+        )
+        pa = _write_parquet(tmp_path, "a.parquet", sql_a)
+        pb = _write_parquet(tmp_path, "b.parquet", sql_b)
+        st = one_shot_diff(pa, pb, keys=["id"]).summary.column_stats["d"]
+        assert st["kind"] == "categorical"
+        assert st["distinct_a"] == 2 and st["distinct_b"] == 3
+        assert st["distinct_count_diff"] == 1
+
+    def test_stats_present_in_keyless_mode_and_json(self, tmp_path: Path) -> None:
+        a = _write_csv(tmp_path, "a.csv", "v\n1\n2\n3\n")
+        b = _write_csv(tmp_path, "b.csv", "v\n1\n2\n9\n")
+        result = one_shot_diff(a, b)  # keyless
+        stats = result.summary.column_stats["v"]
+        # means: source (1+2+3)/3 = 2 ; target (1+2+9)/3 = 4
+        assert stats["mean_diff"] == pytest.approx(2.0)
+        doc = json.loads(to_json(result))
+        assert doc["summary"]["column_stats"]["v"]["mean_b"] == pytest.approx(4.0)
+
+
+# ---------------------------------------------------------------------------
+# v1.1 — standalone interactive HTML report (Task 2)
+# ---------------------------------------------------------------------------
+
+
+class TestHtmlReport:
+    def _result(self, tmp_path: Path):
+        a = _write_csv(tmp_path, "a.csv", "id,v\n1,keep\n2,old\n3,dropme\n")
+        b = _write_csv(tmp_path, "b.csv", "id,v\n1,keep\n2,new\n4,brand-new\n")
+        return one_shot_diff(a, b, keys=["id"])
+
+    def test_html_structure_integrity(self, tmp_path: Path) -> None:
+        out = to_html(self._result(tmp_path))
+        assert out.lstrip().startswith("<!DOCTYPE html>")
+        assert "<style>" in out and "</style>" in out
+        assert "<script>" in out and "</script>" in out
+        assert "const REPORT =" in out
+        # Executive summary card labels are present.
+        for label in ("Total rows", "Unchanged", "Modified", "Added", "Deleted",
+                      "Schema changes", "Duration"):
+            assert label in out
+        # Statistical drift table rendered server-side.
+        assert "Column statistical drift" in out
+        # Interactive controls exist.
+        for frag in ('id="search"', 'id="onlyDrift"', 'id="statusFilter"',
+                     'id="pageSize"', 'id="prevPage"'):
+            assert frag in out
+
+    def test_html_script_injection_is_neutralised(self, tmp_path: Path) -> None:
+        a = _write_csv(tmp_path, "a.csv", "id,v\n1,</script><script>alert(1)</script>\n")
+        b = _write_csv(tmp_path, "b.csv", "id,v\n1,pwned\n")
+        out = to_html(one_shot_diff(a, b, keys=["id"]))
+        # The raw closing tag must never appear inside the embedded JSON blob.
+        assert "</script>alert" not in out.split("const REPORT =")[1].split(";\n")[0]
+        assert r"<\/script>" in out
+
+    def test_html_summary_numbers_rendered(self, tmp_path: Path) -> None:
+        result = self._result(tmp_path)
+        out = to_html(result)
+        s = result.summary
+        assert str(s.modified_rows_count) in out
+        assert str(s.added_rows_count) in out
+        assert str(s.deleted_rows_count) in out
+
+    def test_render_dispatch_and_cli_html_output(self, tmp_path: Path) -> None:
+        result = self._result(tmp_path)
+        assert render(result, "html") == to_html(result)
+        out_file = tmp_path / "report.html"
+        rc = main([str(tmp_path / "a.csv"), str(tmp_path / "b.csv"), "--key", "id",
+                   "--format", "html", "--output", str(out_file)])
+        assert rc == EXIT_OK
+        assert out_file.read_text(encoding="utf-8").lstrip().startswith("<!DOCTYPE html>")
+        # --output-file alias must behave identically.
+        alias_file = tmp_path / "report_alias.html"
+        rc = main([str(tmp_path / "a.csv"), str(tmp_path / "b.csv"), "--key", "id",
+                   "--format", "html", "--output-file", str(alias_file)])
+        assert rc == EXIT_OK
+        assert alias_file.exists()
+
+    def test_preview_rows_grouping(self, tmp_path: Path) -> None:
+        from duck_diff.reporter import _build_preview_rows
+        rows = _build_preview_rows(self._result(tmp_path))
+        statuses = [r["status"] for r in rows]
+        assert statuses.count("modified") >= 1
+        assert statuses.count("added") >= 1
+        assert statuses.count("deleted") >= 1
+
+
+# ---------------------------------------------------------------------------
+# v1.1 — MCP server tools (Task 3)
+# ---------------------------------------------------------------------------
+
+
+class TestMcpServer:
+    def test_tool_definitions_complete(self) -> None:
+        from duck_diff.mcp_server import TOOL_DEFINITIONS
+        names = {t["name"] for t in TOOL_DEFINITIONS}
+        assert names == {"diff_datasets", "inspect_schema_drift", "get_column_stats"}
+        for tool in TOOL_DEFINITIONS:
+            assert tool["inputSchema"]["type"] == "object"
+            assert set(tool["inputSchema"]["required"]) == {"source", "target"}
+
+    def test_initialize_handshake(self) -> None:
+        from duck_diff.mcp_server import handle_message
+        response = handle_message(
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+             "params": {"protocolVersion": "2024-11-05"}}
+        )
+        assert response is not None and response["result"]["serverInfo"]["name"].startswith("duck-diff")
+        assert "protocolVersion" in response["result"]
+
+    def test_notification_yields_no_response(self) -> None:
+        from duck_diff.mcp_server import handle_message
+        assert handle_message({"jsonrpc": "2.0", "method": "notifications/initialized"}) is None
+
+    def test_unknown_method_returns_error(self) -> None:
+        from duck_diff.mcp_server import handle_message
+        response = handle_message({"jsonrpc": "2.0", "id": 7, "method": "no/such"})
+        assert response["error"]["code"] == -32601
+
+    def test_malformed_line_returns_parse_error(self) -> None:
+        from duck_diff.mcp_server import handle_line
+        response = json.loads(handle_line("{not json"))
+        assert response["error"]["code"] == -32700
+
+    def test_tools_call_diff_datasets_valid_json(self, tmp_path: Path) -> None:
+        from duck_diff.mcp_server import handle_message
+        a, b = _drift_pair(Path(str(tmp_path)))
+        message = {
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "diff_datasets",
+                       "arguments": {"source": a, "target": b, "key": ["id"],
+                                     "tolerance": 0.001}},
+        }
+        response = handle_message(message)
+        assert response["result"]["isError"] is False
+        payload = json.loads(response["result"]["content"][0]["text"])
+        assert payload["summary"]["modified_rows_count"] == 1
+        assert payload["drift_detected"] is True
+
+    def test_tools_call_inspect_schema_drift(self, tmp_path: Path) -> None:
+        from duck_diff.mcp_server import handle_message
+        a = _write_csv(Path(str(tmp_path)), "sa.csv", "id,age\n1,30\n")
+        b = _write_csv(Path(str(tmp_path)), "sb.csv", "id,height\n1,170\n")
+        response = handle_message({
+            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {"name": "inspect_schema_drift",
+                       "arguments": {"source": a, "target": b}},
+        })
+        payload = json.loads(response["result"]["content"][0]["text"])
+        assert payload["has_schema_drift"] is True
+        assert payload["only_in_a"] == ["age"] and payload["only_in_b"] == ["height"]
+
+    def test_tools_call_get_column_stats(self, tmp_path: Path) -> None:
+        from duck_diff.mcp_server import handle_message
+        a = _write_csv(Path(str(tmp_path)), "ca.csv", "id,v\n1,10\n2,20\n")
+        b = _write_csv(Path(str(tmp_path)), "cb.csv", "id,v\n1,10\n2,40\n")
+        response = handle_message({
+            "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+            "params": {"name": "get_column_stats",
+                       "arguments": {"source": a, "target": b, "key": "id"}},
+        })
+        payload = json.loads(response["result"]["content"][0]["text"])
+        # means: source (10+20)/2 = 15 ; target (10+40)/2 = 25
+        assert payload["column_stats"]["v"]["mean_diff"] == pytest.approx(10.0)
+
+    def test_unknown_tool_reports_is_error(self, tmp_path: Path) -> None:
+        from duck_diff.mcp_server import handle_message
+        response = handle_message({
+            "jsonrpc": "2.0", "id": 5, "method": "tools/call",
+            "params": {"name": "does_not_exist", "arguments": {}},
+        })
+        assert response["result"]["isError"] is True
+        assert "Unknown tool" in response["result"]["content"][0]["text"]
+
+    def test_stdio_round_trip(self, tmp_path: Path) -> None:
+        import io as _io
+        from duck_diff.mcp_server import serve
+        a, b = _drift_pair(Path(str(tmp_path)))
+        requests = "\n".join([
+            json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+            json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+            json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+            "",
+        ]) + "\n"
+        out = _io.StringIO()
+        serve(stdin=_io.StringIO(requests), stdout=out)
+        lines = [json.loads(x) for x in out.getvalue().splitlines() if x.strip()]
+        assert len(lines) == 2  # notification produced no output
+        assert lines[0]["result"]["serverInfo"]["name"] == "duck-diff-mcp"
+        tool_names = {t["name"] for t in lines[1]["result"]["tools"]}
+        assert tool_names == {"diff_datasets", "inspect_schema_drift", "get_column_stats"}

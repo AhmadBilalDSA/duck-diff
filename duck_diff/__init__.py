@@ -16,7 +16,7 @@ from .engine import DiffResult, DiffSummary, DuckDiffer
 from .io import SourceError
 from .schema_diff import SchemaDiffResult
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 __all__ = [
     "DuckDiffer",

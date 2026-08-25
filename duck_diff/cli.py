@@ -179,9 +179,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-o",
         "--output",
+        "--output-file",
+        dest="output",
         default=None,
         metavar="PATH",
-        help="Write the report to PATH instead of stdout.",
+        help="Write the report to PATH instead of stdout (UTF-8; e.g. .html, .md, .json).",
     )
     parser.add_argument(
         "--limit",
@@ -232,7 +234,9 @@ def _typer_main(argv: Optional[Sequence[str]]) -> int:
         ),
         ignore_case: bool = _typer.Option(False, "--ignore-case"),
         format_: str = _typer.Option("table", "--format", help="table|markdown|json"),
-        output: Optional[str] = _typer.Option(None, "--output", "-o"),
+        output: Optional[str] = _typer.Option(
+            None, "--output", "--output-file", "-o", help="Report output file path."
+        ),
         limit: int = _typer.Option(20, "--limit"),
         fail_on_drift: bool = _typer.Option(False, "--fail-on-drift"),
         memory_limit: Optional[str] = _typer.Option(None, "--memory-limit"),

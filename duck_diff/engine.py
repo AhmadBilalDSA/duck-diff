@@ -31,6 +31,10 @@ __all__ = ["DiffResult", "DiffSummary", "DuckDiffer"]
 
 _TEXTUAL_TOKENS: Tuple[str, ...] = ("VARCHAR", "TEXT", "STRING", "CHAR", "ENUM")
 
+_NUMERIC_TOKENS: Tuple[str, ...] = (
+    "INT", "FLOAT", "DOUBLE", "REAL", "DECIMAL", "NUMERIC", "HUGEINT",
+)
+
 _ALIAS_A = "__dd_a"
 _ALIAS_B = "__dd_b"
 
@@ -52,6 +56,9 @@ class DiffSummary:
     deleted_rows_count: int = 0
     column_drift_stats: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     sample_mismatches: List[List[Any]] = field(default_factory=list)
+    #: Single-pass in-engine distribution metrics per shared column
+    #: (numeric: null/mean/min/max deltas + pct shift; categorical: null/distinct deltas).
+    column_stats: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     @property
     def drift_detected(self) -> bool:
@@ -79,6 +86,9 @@ class DiffSummary:
                 k: dict(v) for k, v in self.column_drift_stats.items()
             },
             "sample_mismatches": [list(rec) for rec in self.sample_mismatches],
+            "column_stats": {
+                k: dict(v) for k, v in self.column_stats.items()
+            },
             "drift_detected": self.drift_detected,
         }
 
@@ -278,6 +288,112 @@ class DuckDiffer:
         upper = type_str.upper()
         return any(token in upper for token in _TEXTUAL_TOKENS)
 
+    @staticmethod
+    def _is_numeric(type_str: str) -> bool:
+        upper = type_str.upper()
+        return any(token in upper for token in _NUMERIC_TOKENS)
+
+    # -- single-pass column statistics ----------------------------------------
+
+    def _column_stats(
+        self,
+        shared_columns: Sequence[Tuple[str, str, str]],
+    ) -> Dict[str, Dict[str, Any]]:
+        """Compute per-column distribution drift entirely inside DuckDB.
+
+        One aggregate query per side (single pass, constant memory): non-null
+        counts, ``AVG/MIN/MAX(TRY_CAST(col AS DOUBLE))`` and
+        ``COUNT(DISTINCT col)`` for every shared column. Numeric-typed columns
+        additionally expose mean/min/max deltas and percentage shift;
+        everything else reports null-count and distinct-count deltas.
+        """
+        if not shared_columns:
+            return {}
+
+        width = 5  # cnt, mean, min, max, distinct per column
+
+        def side_metrics(alias: str) -> Tuple[int, List[Tuple[Any, ...]]]:
+            exprs: List[str] = ["COUNT(*)"]
+            for name, _type_a, _type_b in shared_columns:
+                ref = f"{alias}.{quote_identifier(name)}"
+                exprs.append(f"COUNT({ref})")
+                exprs.append(f"AVG(TRY_CAST({ref} AS DOUBLE))")
+                exprs.append(f"MIN(TRY_CAST({ref} AS DOUBLE))")
+                exprs.append(f"MAX(TRY_CAST({ref} AS DOUBLE))")
+                exprs.append(f"COUNT(DISTINCT {ref})")
+            row = self._conn.execute(
+                f"SELECT {', '.join(exprs)} FROM {quote_identifier(alias)}"
+            ).fetchone()
+            total = int(row[0])
+            columns_metrics = [
+                tuple(row[1 + i * width : 1 + (i + 1) * width])
+                for i in range(len(shared_columns))
+            ]
+            return total, columns_metrics
+
+        total_a, metrics_a = side_metrics(_ALIAS_A)
+        total_b, metrics_b = side_metrics(_ALIAS_B)
+
+        def _num(value: Any) -> Optional[float]:
+            return None if value is None else float(value)
+
+        stats: Dict[str, Dict[str, Any]] = {}
+        for idx, (name, type_a, type_b) in enumerate(shared_columns):
+            cnt_a, mean_a, min_a, max_a, dist_a = metrics_a[idx]
+            cnt_b, mean_b, min_b, max_b, dist_b = metrics_b[idx]
+            kind = (
+                "numeric"
+                if self._is_numeric(type_a) or self._is_numeric(type_b)
+                else "categorical"
+            )
+            nulls_a = total_a - int(cnt_a or 0)
+            nulls_b = total_b - int(cnt_b or 0)
+            entry: Dict[str, Any] = {"kind": kind}
+
+            if kind == "numeric":
+                mean_a_f, mean_b_f = _num(mean_a), _num(mean_b)
+                pct_shift: Optional[float] = None
+                if mean_a_f is not None and mean_b_f is not None and abs(mean_a_f) > 0:
+                    pct_shift = round(100.0 * (mean_b_f - mean_a_f) / abs(mean_a_f), 4)
+                entry.update(
+                    null_count_a=nulls_a,
+                    null_count_b=nulls_b,
+                    null_count_diff=nulls_b - nulls_a,
+                    mean_a=mean_a_f,
+                    mean_b=mean_b_f,
+                    mean_diff=(
+                        round(mean_b_f - mean_a_f, 6)
+                        if mean_a_f is not None and mean_b_f is not None
+                        else None
+                    ),
+                    min_a=_num(min_a),
+                    min_b=_num(min_b),
+                    min_diff=(
+                        round(float(min_b) - float(min_a), 6)
+                        if min_a is not None and min_b is not None
+                        else None
+                    ),
+                    max_a=_num(max_a),
+                    max_b=_num(max_b),
+                    max_diff=(
+                        round(float(max_b) - float(max_a), 6)
+                        if max_a is not None and max_b is not None
+                        else None
+                    ),
+                    mean_pct_shift=pct_shift,
+                )
+            else:
+                entry.update(
+                    null_count_a=nulls_a,
+                    null_count_b=nulls_b,
+                    null_count_diff=nulls_b - nulls_a,
+                    distinct_a=int(dist_a or 0),
+                    distinct_b=int(dist_b or 0),
+                    distinct_count_diff=int(dist_b or 0) - int(dist_a or 0),
+                )
+            stats[name] = entry
+        return stats
+
     def _maybe_lower(self, ref: str, type_str: str) -> str:
         if self._ignore_case and self._is_textual(type_str):
             return f"LOWER({ref})"
@@ -418,6 +534,45 @@ class DuckDiffer:
                 for rec in self._conn.execute(samples_sql).fetchall()
             ]
 
+        # Bounded row-level previews for added/deleted rows (keyed anti-join sides).
+        if self._sample_limit > 0:
+            limit = int(self._sample_limit)
+            key_expr2 = self._sample_key_expr(len(keys))
+
+            def _j_concat(qualifier: str, count_keys: int, count_vals: int) -> str:
+                parts = [
+                    f"COALESCE(CAST(\"{qualifier}k{j}\" AS VARCHAR), '__NULL__')"
+                    for j in range(count_keys)
+                ] + [
+                    f"COALESCE(CAST(\"{qualifier}{i}\" AS VARCHAR), '__NULL__')"
+                    for i in range(count_vals)
+                ]
+                return (
+                    parts[0] if len(parts) == 1
+                    else "CONCAT_WS('||', " + ", ".join(parts) + ")"
+                )
+
+            a_repr = _j_concat("a", len(keys), len(nonkeys))
+            b_repr = _j_concat("b", len(keys), len(nonkeys))
+            deleted_sql = (
+                cte
+                + f"\nSELECT {key_expr2} AS key, {a_repr} AS repr FROM j "
+                + f"WHERE rid_b IS NULL ORDER BY key LIMIT {limit}"
+            )
+            added_sql = (
+                cte
+                + f"\nSELECT {key_expr2} AS key, {b_repr} AS repr FROM j "
+                + f"WHERE rid_a IS NULL ORDER BY key LIMIT {limit}"
+            )
+            for record in self._conn.execute(deleted_sql).fetchall():
+                samples.append([record[0], "__deleted_row__", record[1], None])
+            for record in self._conn.execute(added_sql).fetchall():
+                samples.append([record[0], "__added_row__", None, record[1]])
+
+        distribution_stats = self._column_stats(
+            [(name, types[0], types[1]) for name, types in shared_map.items()]
+        )
+
         return DiffSummary(
             identical_rows_count=matched_n - modified,
             modified_rows_count=modified,
@@ -425,6 +580,7 @@ class DuckDiffer:
             deleted_rows_count=deleted,
             column_drift_stats=column_stats,
             sample_mismatches=samples,
+            column_stats=distribution_stats,
         )
 
     def _sample_key_expr(self, n_keys: int) -> str:
@@ -491,6 +647,14 @@ class DuckDiffer:
                 samples.append([str(record[0])[:12], "__deleted_row__", record[1], None])
             samples = samples[:limit]
 
+        b_index = {n.lower(): t for n, t in cols_b}
+        shared_for_stats = [
+            (n, t, b_index[n.lower()]) for n, t in cols_a if n.lower() in b_index
+        ]
+        distribution_stats = (
+            self._column_stats(shared_for_stats) if shared_for_stats else {}
+        )
+
         return DiffSummary(
             identical_rows_count=identical,
             modified_rows_count=0,
@@ -498,4 +662,5 @@ class DuckDiffer:
             deleted_rows_count=deleted,
             column_drift_stats={},
             sample_mismatches=samples,
+            column_stats=distribution_stats,
         )

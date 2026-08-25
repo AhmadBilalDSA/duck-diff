@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>duck-diff — Social Media Kit</title>
+<style>
+  @page { size: A4; margin: 16mm 15mm; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Segoe UI", Arial, sans-serif;
+    color: #1e293b; margin: 0; line-height: 1.5; font-size: 12px;
+  }
+  .cover {
+    background: linear-gradient(135deg, #0f172a 0%, #1e3a8a 100%);
+    color: #fff; border-radius: 14px; padding: 34px 30px; margin-bottom: 22px;
+  }
+  .cover h1 { margin: 0 0 6px; font-size: 30px; letter-spacing: .5px; }
+  .cover p.sub { margin: 0 0 14px; font-size: 14px; color: #cbd5e1; }
+  .badges span {
+    display: inline-block; background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.25);
+    padding: 3px 10px; border-radius: 999px; margin: 2px 4px 2px 0; font-size: 11px;
+  }
+  h2.section {
+    font-size: 19px; color: #0f172a; border-bottom: 3px solid #f59e0b;
+    padding-bottom: 6px; margin: 26px 0 12px;
+  }
+  h2.section .num {
+    display: inline-block; background: #f59e0b; color: #0f172a; border-radius: 8px;
+    padding: 1px 9px; margin-right: 8px; font-size: 15px; vertical-align: 2px;
+  }
+  .platform-tag {
+    display: inline-block; font-size: 10.5px; font-weight: 600; letter-spacing: .4px;
+    text-transform: uppercase; background: #fef3c7; color: #92400e;
+    border: 1px solid #fcd34d; border-radius: 999px; padding: 2px 10px; margin: 0 0 8px;
+  }
+  pre.post {
+    background: #0f172a; color: #e2e8f0; border-radius: 10px; padding: 13px 15px;
+    font-family: Consolas, "Courier New", monospace; font-size: 11px;
+    white-space: pre-wrap; overflow-wrap: anywhere; margin: 8px 0 14px;
+  }
+  pre.code {
+    background: #f1f5f9; color: #0f172a; border-left: 4px solid #f59e0b;
+    border-radius: 6px; padding: 10px 13px; font-family: Consolas, monospace;
+    font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; margin: 8px 0 14px;
+  }
+  .label { font-weight: 700; color: #334155; margin-top: 10px; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0 16px; font-size: 11.5px; }
+  th { background: #0f172a; color: #fff; text-align: left; padding: 7px 10px; }
+  td { border: 1px solid #e2e8f0; padding: 6px 10px; vertical-align: top; }
+  tr:nth-child(even) td { background: #f8fafc; }
+  .tip {
+    background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 10px;
+    padding: 12px 15px; margin: 14px 0;
+  }
+  .tip b { color: #065f46; }
+  ul.tight li { margin: 3px 0; }
+  .pagebreak { break-before: page; }
+  footer { margin-top: 26px; color: #64748b; font-size: 10.5px; border-top: 1px solid #e2e8f0; padding-top: 8px; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <h1>🦆 duck-diff — Social Media Kit</h1>
+  <p class="sub">Ready-to-paste launch content for every platform · v1.0</p>
+  <div class="badges">
+    <span>Parquet / CSV / TSV / JSON / SQLite</span>
+    <span>DuckDB-powered</span>
+    <span>Constant memory</span>
+    <span>GitHub Action</span>
+    <span>MIT licensed</span>
+    <span>42 offline tests</span>
+  </div>
+</div>
+
+<h2 class="section"><span class="num">1</span>X / Twitter — Launch Thread</h2>
+
+<div class="platform-tag">Tweet 1 · Hook</div>
+<pre class="post">I got tired of "the data looks fine" turning out to be a lie. 🐛
+
+So I built duck-diff 🦆 — an open-source engine that diffs two datasets and tells you EXACTLY what changed: schema, rows, and every cell.
+
+Powered by DuckDB. Constant memory. MIT licensed.
+
+Thread 🧵⬇️</pre>
+
+<div class="platform-tag">Tweet 2 · Formats</div>
+<pre class="post">It eats basically anything you throw at it:
+
+📄 Parquet
+📊 CSV &amp; TSV
+🧾 JSON / JSONL / NDJSON
+🗄️ SQLite — just pass sqlite://mydb.db#tablename
+
+Format auto-detected from the path. One command, any source:
+
+duck-diff old.parquet new.parquet --key id,region</pre>
+
+<div class="platform-tag">Tweet 3 · Detection layers</div>
+<pre class="post">Three layers of detection 🔍
+
+1️⃣ SCHEMA DRIFT — columns added/removed, types changed (metadata-only check, O(1))
+2️⃣ ROW DRIFT — additions ➕ and deletions ➖ by primary key
+3️⃣ CELL DRIFT — which column changed, how often (drift %), with sample values</pre>
+
+<div class="pagebreak"></div>
+<div class="platform-tag">Tweet 4 · Keyless mode</div>
+<pre class="post">No primary key? Still works.
+
+duck-diff hashes every row with MD5(CONCAT_WS('||', col1, col2, ...)) and does exact multiset math — so even DUPLICATE rows are counted correctly.
+
+identical / added / deleted, zero configuration:
+
+duck-diff events_a.jsonl events_b.jsonl</pre>
+
+<div class="platform-tag">Tweet 5 · Production details</div>
+<pre class="post">The details that make it production-grade ⚙️
+
+• NULL-safe joins (IS NOT DISTINCT FROM): NULL vs NULL = match, NULL vs '' = drift
+• Float tolerance: --epsilon 1e-6 → 100.0 ≈ 100.0005, no false alarms
+• Applied to VALUES only — keys always join strictly
+• --ignore-case for messy string data
+• --memory-limit 2GB caps the buffer manager</pre>
+
+<div class="platform-tag">Tweet 6 · GitHub Action</div>
+<pre class="post">The real superpower: it's a GitHub Action 🤖
+
+      - uses: duck-diff/duck-diff@v1
+        with:
+          source_path: data/baseline.parquet
+          target_path: data/candidate.parquet
+          key_columns: "id,region"
+          fail_on_drift: "true"
+
+Outputs drift_detected / modified_rows / schema_drift.
+Bad drift = broken build. Data contracts that actually enforce themselves. 🛡️</pre>
+
+<div class="platform-tag">Tweet 7 · Reports + close</div>
+<pre class="post">Reports for humans AND machines:
+
+🖥️ Rich terminal UI (green=match, red=drift) with ASCII fallback
+📝 GitHub-flavored Markdown w/ drift badges + collapsible sections → paste into PRs
+🔢 JSON for automated assertions
+
+Exit codes: 0 clean · 1 drifted · 2 error
+
+pip install duck-diff 🦆
+MIT · 42 offline tests · Python 3.9+</pre>
+
+<h2 class="section pagebreak"><span class="num">2</span>LinkedIn — Long-form (production-grade positioning)</h2>
+
+<pre class="post">🦆 Announcing duck-diff: production-grade data diffing for teams whose pipelines can't afford surprises.
+
+Every data team knows the moment: a dashboard looks wrong, someone asks "did the upstream change?", and three engineers lose a day finding out. duck-diff answers that question in seconds — deterministically, inside CI.
+
+WHAT IT DOES
+Diff any two datasets — Parquet, CSV, TSV, JSON/JSONL/NDJSON, or SQLite tables — and report precisely:
+
+→ Schema drift: columns added or removed, type changes detected via metadata-only inspection
+→ Row-level drift: additions and deletions matched on a composite primary key (--key id,region)
+→ Cell-level drift: per-column mismatch counts and drift percentages, plus sample records showing old vs new values side-by-side
+
+WHY IT'S DIFFERENT
+Most diff tools load both datasets into RAM. At scale, that's a crash waiting to happen. duck-diff compiles the entire comparison into DuckDB SQL — null-safe full outer joins, set algebra, hash aggregation — and streams results. Memory stays flat whether you diff megabytes or gigabytes, and you can cap it explicitly with --memory-limit.
+
+BUILT FOR REAL DATA (the part most tools skip)
+• NULL semantics done right: NULL equals NULL; empty string ≠ NULL
+• Floating-point tolerance: --epsilon treats numerically-equal values as matches without weakening key matching
+• No primary key? Keyless mode hashes whole rows with correct duplicate-row (multiset) accounting
+• Case-insensitive comparison mode for inconsistent sources
+• Robust CSV ingestion that survives mixed line endings and ragged files
+• Clear exit-code contract: 0 = clean, 1 = drift, 2 = error — trivially scriptable
+
+CI/CD READY
+Ships as a turnkey GitHub Action. Five inputs (source_path, target_path, key_columns, epsilon, fail_on_drift), three outputs (drift_detected, modified_rows, schema_drift) you can branch on, and a Markdown report with drift badges designed to be pasted directly into pull requests. Schema drift alone can fail a build — because a new column IS a contract change.
+
+FOR DEVELOPERS
+Clean Python API in three lines:
+
+    from duck_diff import diff
+    result = diff("baseline.parquet", "candidate.parquet", keys=["id"])
+    print(result.summary.column_drift_stats)
+
+Fully typed (py.typed included), Rich terminal UI with graceful ASCII fallback, JSON output for machines, MIT licensed, and a 42-test suite that runs completely offline.
+
+Data quality shouldn't be a postmortem. Make it a gate. 🚪
+
+#DataEngineering #OpenSource #DuckDB #DataQuality #Python #GitHubActions</pre>
+
+<h2 class="section pagebreak"><span class="num">3</span>Reddit r/dataengineering</h2>
+
+<div class="label">Title:</div>
+<pre class="post">I open-sourced duck-diff: constant-memory dataset diffing (Parquet/CSV/JSON/SQLite) via embedded DuckDB, with a GitHub Action that gates PRs on data drift</pre>
+
+<div class="label">Body:</div>
+<pre class="post">After one too many "silent" upstream changes breaking downstream models, I built the tool I kept wishing existed.
+
+What it gives you in one command:
+- Schema drift (columns/types) — detected metadata-only, costs nothing
+- Row additions/deletions keyed on composite PKs (--key id,region)
+- Cell-level drift stats per column (mismatch count + drift %)
+- Top-N sample mismatches: [key, column, value_before, value_after]
+
+Design choices you may care about:
+- Everything executes INSIDE DuckDB (full outer joins + set algebra). Nothing is loaded into pandas/RAM. Constant memory, optional --memory-limit cap.
+- Null-safe equality everywhere (IS NOT DISTINCT FROM). NULL==NULL matches; NULL vs '' is drift. This matters more than people think.
+- --epsilon for float noise (TRY_CAST-based, applied to values, never to join keys).
+- Keyless mode: MD5(CONCAT_WS('||', ...)) row hashing with proper multiset counting, so duplicate rows don't lie to you.
+- Sources: parquet/csv/tsv/json/jsonl/ndjson paths + sqlite://db#table URIs, auto-detected.
+- Output formats: Rich terminal (ASCII fallback if rich isn't installed), GFM markdown with shields badges + collapsible sections for PR comments, and JSON for assertions.
+- GitHub Action included: inputs source_path/target_path/key_columns/epsilon/fail_on_drift; outputs drift_detected/modified_rows/schema_drift. fail_on_drift makes CI exit 1 on any drift (schema drift counts).
+- Exit code contract: 0 clean / 1 drift / 2 usage-or-runtime error.
+
+Stack: pure Python 3.9+, single hard dependency (duckdb>=0.10). Typer CLI when available, argparse otherwise. Fully type-hinted, py.typed shipped. MIT.
+
+Test suite: 42 tests, 100% offline — generates its own CSV/TSV/JSON/Parquet/SQLite fixtures, covers NULL semantics, epsilon boundaries, keyless multisets, CLI exit codes, and the Action's output contract.
+
+Repo layout is small on purpose: io.py (loaders), schema_diff.py, engine.py (DuckDiffer), reporter.py, cli.py, action.py.
+
+Happy to answer questions about the SQL algebra (null-safe joins + row-number sentinels for presence detection) or the CI setup. What would you want added — snapshot storage? Delta/Iceberg readers? Slack webhook output?</pre>
+
+<h2 class="section"><span class="num">4</span>Discord / Telegram / Slack blast</h2>
+
+<pre class="post">🦆 **duck-diff v1.0 is out!**
+
+Diff ANY two datasets — Parquet • CSV • TSV • JSON • SQLite — straight from the CLI:
+
+`duck-diff baseline.parquet candidate.parquet --key id,region`
+
+✅ schema drift detection
+✅ added/deleted/modified rows (+ per-column drift %)
+✅ NULL-safe compares &amp; float `--epsilon`
+✅ Markdown reports with drift badges → drop into PRs
+✅ **GitHub Action**: fail the build when data drifts
+✅ constant memory (runs inside DuckDB, not pandas)
+
+MIT · pip install duck-diff · 42 offline tests ✅</pre>
+
+<h2 class="section pagebreak"><span class="num">5</span>Product Hunt</h2>
+
+<div class="label">Tagline (≤60 chars):</div>
+<pre class="post">Catch data drift before your users do 🦆</pre>
+
+<div class="label">Description:</div>
+<pre class="post">duck-diff is an open-source data diffing engine for Parquet, CSV, TSV, JSON and SQLite, powered by an embedded DuckDB SQL engine. It detects schema drift, row additions/deletions, and cell-level changes with constant memory — then ships the result as a terminal UI, a badge-decorated Markdown PR comment, or machine-readable JSON. Its GitHub Action turns "did the data change?" into an automated CI gate with strict exit codes. One hard dependency (duckdb), MIT licensed, fully offline test suite.</pre>
+
+<h2 class="section"><span class="num">6</span>Changelog-style notes (blog / newsletter)</h2>
+
+<pre class="post">## duck-diff v1.0.0 — release highlights
+
+### Core engine
+- Keyed diffing on composite keys (--key id,region) using NULL-safe FULL OUTER JOINs
+- Keyless diffing via MD5 row hashing with exact multiset semantics under duplicates
+- Per-column drift statistics: mismatch count + drift percentage
+- Top-N sample mismatch records [key, column, value_a, value_b]
+- Epsilon float tolerance (--epsilon) — TRY_CAST-based, never relaxes key joins
+- Case-insensitive text comparison (--ignore-case)
+- Constant-memory execution; optional DuckDB buffer cap (--memory-limit 2GB)
+
+### Sources &amp; schema
+- Auto-detected loaders: .parquet, .csv, .tsv, .json/.jsonl/.ndjson, sqlite://&lt;db&gt;#&lt;table&gt;
+- Native SQLite attach with automatic chunked stdlib-sqlite3 fallback (air-gap friendly)
+- Metadata-only schema drift: columns only-in-A / only-in-B, type mismatch strings
+- Lenient CSV retry (strict_mode=false) for ragged/mixed-EOL files
+
+### Interfaces
+- CLI flags: --key --epsilon --ignore-case --format table|markdown|json --output --limit --fail-on-drift --memory-limit
+- Typer-powered UX with automatic argparse fallback
+- Python API: diff(...) one-liner + reusable DuckDiffer context manager; fully typed (py.typed)
+- Reporters: Rich cards/tables (ASCII fallback), GitHub-flavored Markdown with shields.io badges and collapsible sections, stable JSON document
+
+### CI/CD
+- Composite GitHub Action: inputs source_path, target_path, key_columns, epsilon, fail_on_drift; outputs drift_detected, modified_rows, schema_drift
+- Strict gating contract: exit 0 = clean, 1 = drift detected, 2 = error
+- Unicode-safe console output on legacy Windows codepages
+
+### Quality
+- 42 offline tests: NULL semantics, epsilon boundaries, keyless multisets, CLI exit codes, Action output contract, reporters
+- Single runtime dependency: duckdb&gt;=0.10.0; extras: [ui], [dev]
+- MIT licensed</pre>
+
+<h2 class="section pagebreak"><span class="num">7</span>Hashtag Sets &amp; Posting Tips</h2>
+
+<table>
+  <tr><th>Platform</th><th>Hashtags</th></tr>
+  <tr><td>X / Twitter</td><td>#opensource #python #duckdb #dataengineering #devtools</td></tr>
+  <tr><td>LinkedIn</td><td>#DataEngineering #OpenSource #DataQuality #Python #DuckDB #CICD #GitHubActions</td></tr>
+  <tr><td>Reddit</td><td>(no hashtags — use a tag like [Project] in the title)</td></tr>
+  <tr><td>Instagram / TikTok caption</td><td>#coding #programmer #data #python #tech #opensource #developer</td></tr>
+</table>
+
+<div class="tip">
+<b>Posting tips:</b> Lead with Tweet 1 or the LinkedIn post (strongest hooks). Space thread tweets 2–5 minutes apart so they nest cleanly. Pin the repository link under the first tweet. On Reddit, stick around after posting — early answers to comments make or break project threads. Keep benchmark claims qualitative unless you rerun them on citable hardware.
+</div>
+
+<h2>Quick Facts Box</h2>
+<ul class="tight">
+  <li><b>Name:</b> duck-diff 🦆 · v1.0.0 · MIT license</li>
+  <li><b>One-liner:</b> Constant-memory dataset diffing across Parquet, CSV, TSV, JSON and SQLite — powered by an embedded DuckDB SQL engine.</li>
+  <li><b>Install:</b> <code>pip install duck-diff</code> (extras: <code>[ui]</code>, <code>[dev]</code>)</li>
+  <li><b>Run:</b> <code>duck-diff baseline.parquet candidate.parquet --key id,region --fail-on-drift</code></li>
+  <li><b>Exit codes:</b> 0 clean · 1 drift · 2 error</li>
+  <li><b>Stack:</b> Python ≥ 3.9 · single hard dependency <code>duckdb&gt;=0.10</code> · typer/argparse dual CLI · rich/ASCII dual UI</li>
+  <li><b>Quality:</b> 42 offline pytest cases · fully type-hinted (<code>py.typed</code>) · Unicode-safe console output</li>
+</ul>
+
+<footer>Generated from the duck-diff project deliverables · Social Media Kit v1 · All copy is original and free to post as-is.</footer>
+
+</body>
+</html>

@@ -1,70 +1,38 @@
 # 🦆 duck-diff
 
-**Fast, constant-memory data diffing across Parquet, CSV, TSV, JSON, Arrow and SQLite — powered by an embedded DuckDB SQL engine.**
+**Fast, constant-memory data reconciliation across Parquet, CSV, TSV, JSON, Arrow and SQLite — powered by an embedded DuckDB SQL engine. CLI · Python library · GitHub Action · MCP server for AI agents.**
 
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Engine](https://img.shields.io/badge/engine-duckdb%20%E2%89%A50.10-FFF000?logo=duckdb&logoColor=black)](https://duckdb.org/)
-[![Tests](https://img.shields.io/badge/tests-42%20passing-brightgreen?logo=pytest&logoColor=white)](#testing)
-[![CLI](https://img.shields.io/badge/UI-rich%20%7C%20ASCII-orange)](#output-formats)
+[![Tests](https://img.shields.io/badge/tests-61%20passing-brightgreen?logo=pytest&logoColor=white)](#testing)
+[![MCP](https://img.shields.io/badge/MCP-server-8A2BE2)](#-mcp-server-ai-agents)
 
 ---
 
-`duck-diff` tells you exactly what changed between two datasets: **schema drift**
-(columns added/removed, types changed), **row additions & deletions**, and
-**cell-level modifications** with per-column drift statistics — while executing
-every heavy operation *inside* DuckDB via `FULL OUTER JOIN` / set algebra over
-SQL views. Datasets never leave the engine, so memory stays **constant** whether
-you diff 1 KB or 100 GB.
+`duck-diff` answers one question precisely: **what changed between two datasets?**
 
-It ships as a Python **library**, a polished **CLI** (`duck-diff`), and a
-turnkey **GitHub Action** for data-platform CI/CD with strict exit-code gating
-and PR-ready drift badges.
+- **Schema drift** — columns added/removed, type changes (metadata-only `DESCRIBE SELECT … LIMIT 0`, O(1)).
+- **Row drift** — additions and deletions via composite primary keys.
+- **Cell drift** — per-column mismatch counts + drift %, with sample records `[key, column, old, new]`.
+- **Statistical drift** — single-pass in-engine distribution metrics per column (means, min/max, null & distinct deltas).
 
-## ✨ Highlights
-
-- 🗂️ **Universal sources** — Parquet, CSV, TSV, JSON/JSONL/NDJSON and
-  `sqlite://<db>#<table>` URIs, auto-detected from the path.
-- 🔑 **Keyed diffing** (`--key id,region`) with NULL-safe joins
-  (`IS NOT DISTINCT FROM`) so `NULL` keys match and never vanish into anti-joins.
-- #️⃣ **Keyless diffing** — rows are auto-hashed with
-  `MD5(CONCAT_WS('||', col₁, col₂, …))`; multiset arithmetic yields exact
-  identical/added/deleted counts even with duplicate rows.
-- 🌡️ **Float tolerance** (`--epsilon`) using `TRY_CAST(… AS DOUBLE)` so numeric
-  noise (e.g. `100.0` vs `100.0005`) doesn't fire false alarms — applied to
-  values only, never to keys.
-- 🧬 **Schema drift detection** via metadata-only `DESCRIBE SELECT … LIMIT 0`.
-- 🖥️ **Rich terminal UI** when `rich` is installed, dependency-free ASCII tables
-  otherwise.
-- 📝 **Markdown CI exporter** — GitHub-flavored PR comment with drift badges,
-  summary table, collapsible sample-mismatch & schema sections.
-- 🔢 **JSON exporter** — one machine-readable document for automated assertions.
-- ⚙️ **GitHub Action** — inputs `source_path`, `target_path`, `key_columns`,
-  `epsilon`, `fail_on_drift`; outputs `drift_detected`, `modified_rows`,
-  `schema_drift`.
-- 🧪 **42 offline tests** — the whole suite runs without network access.
+Every heavy operation executes *inside* DuckDB (null-safe `FULL OUTER JOIN`, hash aggregation, set algebra). Datasets never materialize in Python RAM — memory stays **constant** from 1 KB to 100 GB.
 
 ## 📦 Installation
 
 ```bash
 pip install duck-diff            # core (duckdb only)
-pip install "duck-diff[ui]"      # + rich terminal UI & typer CLI sugar
-pip install "duck-diff[dev]"     # + pytest for development
+pip install "duck-diff[ui]"      # + rich terminal UI & typer CLI
+pip install "duck-diff[dev]"     # + pytest
 ```
 
-Or from a checkout of this repository:
+Requires Python ≥ 3.9. Everything beyond `duckdb>=0.10.0` is optional; the CLI degrades gracefully (argparse parser, ASCII rendering).
+
+## 🚀 CLI
 
 ```bash
-pip install .
-```
-
-Requires Python ≥ 3.9 and `duckdb>=0.10.0`. Everything else is optional; the
-CLI falls back to `argparse` + ASCII rendering automatically.
-
-## 🚀 CLI Quickstart
-
-```bash
-# Keyed diff of two Parquet files with a Rich terminal report
+# Keyed diff with the interactive terminal report
 duck-diff baseline.parquet candidate.parquet --key id,region
 
 # Float tolerance + case-insensitive text comparison
@@ -76,34 +44,72 @@ duck-diff events_a.jsonl events_b.jsonl
 # SQLite sources via URI
 duck-diff "sqlite://prod.db#orders" "sqlite://staging.db#orders" --key order_id
 
-# PR-comment markdown written straight to a file
-duck-diff a.parquet b.parquet --key id --format markdown --output drift.md
+# Standalone interactive HTML report (air-gapped: zero external assets)
+duck-diff a.parquet b.parquet --key id --format html --output-file report.html
 
 # CI gate: exit code 1 when anything drifted
 duck-diff a.parquet b.parquet --key id --fail-on-drift
 ```
 
-### Flags
+### Options
 
 | Flag | Description |
 | --- | --- |
 | `-k, --key COLS` | Comma-separated key columns; omit for keyless hashing |
-| `--epsilon F` | Absolute float tolerance for numeric comparisons (default `0`) |
+| `--epsilon F` | Absolute float tolerance for value columns (default `0`) |
 | `--ignore-case` | Compare text columns case-insensitively |
-| `--format {table,markdown,json}` | Output format (default `table`) |
-| `-o, --output PATH` | Write report to file instead of stdout (UTF-8) |
-| `--limit N` | Max sample mismatch records (default `20`) |
-| `--fail-on-drift` | Exit `1` when any row-level or schema drift is detected |
-| `--memory-limit SIZE` | DuckDB memory budget, e.g. `"2GB"` (constant-memory mode) |
+| `--format {table,markdown,json,html}` | Output format |
+| `-o, --output, --output-file PATH` | Write report to file instead of stdout (UTF-8) |
+| `--limit N` | Max sample records (default `20`) |
+| `--fail-on-drift` | Exit `1` on any row-level or schema drift |
+| `--memory-limit SIZE` | DuckDB buffer cap, e.g. `"2GB"` |
 | `--version` | Print version |
 
 ### Exit codes
 
 | Code | Meaning |
 | --- | --- |
-| `0` | Success — no drift, or drift tolerated without `--fail-on-drift` |
+| `0` | Success — no drift (or drift tolerated) |
 | `1` | Drift detected while `--fail-on-drift` was set |
-| `2` | Usage or runtime error (missing file, unreadable source, bad key) |
+| `2` | Usage or runtime error (human-readable message, never a traceback) |
+
+## 🖼️ Interactive HTML reports
+
+`--format html` emits a **single self-contained `.html` file** — embedded CSS + vanilla JS, no CDNs, works air-gapped. See [`samples/report.html`](samples/report.html) for a generated example.
+
+- **Executive summary cards** — total rows, unchanged, modified, added, deleted, schema changes, duration.
+- **Column statistical drift table** — numeric mean/min/max shifts, null deltas, distinct-count deltas; instant client-side column filter.
+- **Side-by-side diff preview** — 🟩 added rows, 🟥 deleted rows, 🟨 modified cells rendered `old → new`.
+- **Controls** — instant search across keys/values, status filter (modified/added/deleted), mismatches-only toggle, page-size selector with pagination.
+
+## 🤖 MCP server (AI agents)
+
+`duck_diff` ships a dependency-free **Model Context Protocol** stdio server so Claude Desktop, Cursor, Windsurf or any MCP client can drive reconciliations natively:
+
+```bash
+duck-diff-mcp          # console script … or:
+python -m duck_diff.mcp_server
+```
+
+| Tool | Arguments | Returns |
+| --- | --- | --- |
+| `diff_datasets` | `source`, `target`, `key?`, `tolerance=0.0`, `sample_limit=20`, `format="json"` | Full structured diff incl. sample mismatches |
+| `inspect_schema_drift` | `source`, `target` | Column types, missing columns, type mismatches |
+| `get_column_stats` | `source`, `target`, `key?`, `tolerance?` | Per-column statistical drift metrics |
+
+Register it in Claude Desktop (`claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "duck-diff": {
+      "command": "duck-diff-mcp"
+    }
+  }
+}
+```
+
+For Cursor / Windsurf use the same `command`/`args` shape in their MCP settings. The server speaks newline-delimited JSON-RPC 2.0 over stdio, never leaks tracebacks (errors surface as structured `isError` tool results), and releases every DuckDB connection deterministically.
 
 ## 🐍 Python API
 
@@ -112,173 +118,89 @@ from duck_diff import diff, DuckDiffer
 
 result = diff("baseline.parquet", "candidate.parquet", keys=["id"], epsilon=1e-9)
 
-print(result.mode)                        # "keyed"
-print(result.schema_diff.only_in_b)       # columns added in target
-print(result.summary.modified_rows_count) # rows with changed cells
-print(result.summary.column_drift_stats)  # {"amount": {"mismatches": 3, "drift_pct": 0.12}}
-print(result.summary.sample_mismatches)   # [["42", "amount", "10.0", "11.5"], ...]
-assert not result.drift_detected          # or gate your own pipeline
+print(result.summary.modified_rows_count)
+print(result.summary.column_drift_stats["amount"])   # {"mismatches": 3, "drift_pct": 0.12}
+print(result.summary.column_stats["amount"])         # single-pass distribution metrics:
+# {"kind": "numeric", "null_count_diff": 1, "mean_diff": 10.0,
+#  "min_diff": 0.0, "max_diff": 20.0, "mean_pct_shift": 50.0, ...}
 
-# Reusable engine with an explicit memory budget:
-with DuckDiffer(memory_limit="2GB", ignore_case=True) as differ:
-    report = differ.diff("a.csv", "b.csv")        # keyless
-    print(report.to_dict()["summary"]["identical_rows_count"])
+with DuckDiffer(memory_limit="2GB") as differ:
+    report = differ.diff("a.csv", "b.csv")           # keyless mode
+
+open("report.html", "w", encoding="utf-8").write(
+    __import__("duck_diff.reporter", fromlist=["to_html"]).to_html(report)
+)
 ```
 
-`DiffResult.to_dict()` powers the JSON exporter:
+JSON document (`--format json` / `to_json`) nests everything machine-consumably: `schema`, `summary` (incl. `column_stats`), top-level `sample_mismatches`, `warnings`, timing.
 
-```bash
-duck-diff a.parquet b.parquet --key id --format json | jq '.summary'
+## 🏗️ Architecture & rule enforcement matrix
+
+```
+source ─▶ io.load_source ─▶ TEMP VIEW "__dd_a" ┐
+target ─▶ io.load_source ─▶ TEMP VIEW "__dd_b" ┴▶ DuckDB engine
+                    │   null-safe FULL OUTER JOIN (IS NOT DISTINCT FROM)
+                    │   per-column equality (+epsilon on values only)
+                    │   MD5(CONCAT_WS('||', …)) multiset hashing
+                    │   single-pass AVG/MIN/MAX/DISTINCT statistics
+                    ▼      aggregates + ≤ limit samples only
+        DiffSummary ─▶ reporters: rich/ASCII · markdown · json · html
+                     └▶ action.py (GitHub outputs) · mcp_server.py (stdio JSON-RPC)
 ```
 
-```json
-{
-  "tool": "duck-diff",
-  "mode": "keyed",
-  "keys": ["id"],
-  "schema": { "only_in_b": ["height"], "type_mismatches": [], "has_schema_drift": true },
-  "summary": {
-    "total_rows_a": 1000, "total_rows_b": 1003,
-    "identical_rows_count": 995, "modified_rows_count": 5,
-    "added_rows_count": 3, "deleted_rows_count": 0,
-    "column_drift_stats": { "amount": { "mismatches": 5, "drift_pct": 0.5 } },
-    "drift_detected": true
-  },
-  "drift_detected": true,
-  "sample_mismatches": [["42", "amount", "10.0", "11.5"]]
-}
-```
+| Architectural rule | How it is enforced |
+| --- | --- |
+| Constant memory — no dataset ever crosses into Python | All comparisons/hashing/stats are SQL aggregates; Python receives scalars and ≤ `--limit` sample rows |
+| Epsilon applies to values, never keys | Join predicate is strict `IS NOT DISTINCT FROM`; epsilon branch exists only in `_equality_expr` used on non-key cells |
+| NULL correctness | `IS NOT DISTINCT FROM` for joins/cells; `COALESCE` sentinels inside hashes; `NULL=NULL` matches, `NULL≠''` drifts (tested) |
+| Windows file-lock resilience | `DuckDiffer.close()` in `finally` everywhere; SQLite fallback cursor closed; sandbox-tolerant `tmp_path` fixture never deletes at teardown |
+| Console safety on legacy codepages | `emit_stdout` reconfigures streams w/ replacement + backslash fallback — cp1252 cannot crash the CLI |
+| Zero missing dependencies | Single hard dep `duckdb>=0.10.0`; extras `[ui]`, `[dev]`; MCP server is stdlib-only |
+| No leaked tracebacks | CLI maps every failure to actionable stderr message + exit code; MCP wraps tool errors into `isError` payloads |
 
-## 🤖 GitHub Action
-
-Drop this into any workflow to gate data changes on pull requests:
+## 🤝 GitHub Action
 
 ```yaml
-name: data-contract
-on:
-  pull_request:
-    paths: ["data/**"]
-
-jobs:
-  diff:
-    runs-on: ubuntu-latest
-    permissions:
-      pull-requests: write
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: duck-diff gate
-        id: diff
-        uses: duck-diff/duck-diff@v1
-        with:
-          source_path: data/baseline.parquet
-          target_path: data/candidate.parquet
-          key_columns: "id,region"
-          epsilon: "1e-9"
-          fail_on_drift: "true"
-
-      - name: Comment on PR
-        if: always()
-        uses: marocchino/sticky-pull-request-comment@v2
-        with:
-          header: duck-diff
-          path: drift_comment.md   # or re-run the CLI with --format markdown
+- uses: duck-diff/duck-diff@v1
+  id: diff
+  with:
+    source_path: data/baseline.parquet
+    target_path: data/candidate.parquet
+    key_columns: "id,region"
+    epsilon: "1e-9"
+    fail_on_drift: "true"
+# outputs: steps.diff.outputs.drift_detected / modified_rows / schema_drift
 ```
 
-### Action inputs
-
-| Input | Required | Default | Description |
-| --- | --- | --- | --- |
-| `source_path` | ✅ | — | Baseline file path or `sqlite://<db>#<table>` URI |
-| `target_path` | ✅ | — | Candidate dataset (same accepted forms) |
-| `key_columns` | — | `""` | Comma-separated keys; empty ⇒ keyless hashing |
-| `epsilon` | — | `"0.0"` | Float tolerance |
-| `fail_on_drift` | — | `"true"` | Fail the step when drift is detected |
-
-### Action outputs
-
-| Output | Type | Description |
-| --- | --- | --- |
-| `drift_detected` | `'true' \| 'false'` | Any row-level **or** schema drift found |
-| `modified_rows` | integer string | Matched rows with ≥1 changed cell |
-| `schema_drift` | `'true' \| 'false'` | Columns added/removed or types drifted |
-
-Downstream steps can branch on them:
-
-```yaml
-- name: Notify
-  if: steps.diff.outputs.drift_detected == 'true'
-  run: echo "Drift! modified=${{ steps.diff.outputs.modified_rows }}"
-```
-
-## 🔬 How it works
-
-```
- source ─▶ io.load_source ─▶ TEMP VIEW "__dd_a" ┐
- target ─▶ io.load_source ─▶ TEMP VIEW "__dd_b" ┴─▶ DuckDB SQL engine
-                                                     │ FULL OUTER JOIN (IS NOT DISTINCT FROM)
-                                                     │ per-column IS NOT DISTINCT FROM / epsilon
-                                                     │ MD5(CONCAT_WS('||', …)) multiset counts
-                                                     ▼
-                                        aggregates + top-N samples only
-                                                     ▼
-                              DiffSummary ◀─▶ reporters (rich / ASCII / md / json)
-```
-
-- **Constant memory** — both sides stay as SQL views over their files; only
-  aggregate rows and `--limit` samples cross into Python. Set
-  `--memory-limit 2GB` to cap DuckDB's buffer manager for laptop-scale runs.
-- **NULL semantics** — `NULL vs NULL` matches, `NULL vs ''` drifts; NULL-safe
-  equality is used for keys, values and hashes alike.
-- **SQLite** — attached natively through DuckDB's `sqlite` extension when
-  available; otherwise `duck_diff.io` transparently ingests the table in
-  50 000-row chunks via stdlib `sqlite3`, keeping air-gapped CI fully offline.
-- **Robust CSV** — `read_csv_auto(header=true)` first; if the strict sniffer
-  rejects odd files (mixed line endings, ragged rows) the loader retries once
-  with `strict_mode=false`.
-
-## 📊 Performance
-
-All work executes as vectorised DuckDB SQL with parallel hash joins — the same
-primitives that make DuckDB analytic queries fast. Representative timings from
-a development laptop (DuckDB 1.5.5, NVMe SSD; rerun on your hardware):
-
-| Scenario | Rows/side | Keyed full diff | Keyless hash diff |
-| --- | ---: | ---: | ---: |
-| Wide CSV (20 cols) | 1 M | ~1.8 s | ~2.4 s |
-| Parquet (10 cols) | 10 M | ~9 s | ~14 s |
-| Identical schemas, zero drift | 10 M | ~7 s | ~11 s |
-
-Peak Python RSS stays flat (< 60 MB) regardless of dataset size — scaling work
-happens inside DuckDB's out-of-core operators.
+Inputs: `source_path`*, `target_path`*, `key_columns`, `epsilon`, `fail_on_drift` (* required). The step prints the Markdown badge report to the job log for PR comments.
 
 ## 🧪 Testing
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest -p no:cacheprovider
+python -m pytest tests/test_diff.py -v -p no:cacheprovider
+python -m compileall .
 ```
 
-The suite (42 tests) generates every dataset on the fly — CSV, TSV, JSON,
-Parquet (via DuckDB's writer) and stdlib-SQLite — and runs fully offline.
-`conftest.py` includes a sandbox-tolerant `tmp_path` fixture for environments
-that forbid `rmtree`.
+61 offline tests cover: schema drift, epsilon boundaries, keyless multisets, NULL semantics, statistical drift against known shifts/null injections, HTML structure & script-injection neutralisation, MCP handshake/tools/stdin round-trips, CLI exit codes and the Action's output contract. `conftest.py` provides a sandbox-tolerant `tmp_path` (no-delete teardown) for locked-down environments.
 
 ## 📁 Project layout
 
 ```
 duck_diff/
-├── action.yml           # GitHub Action metadata (composite run)
-├── pyproject.toml       # packaging, entry points, extras
-├── conftest.py          # pytest configuration
+├── action.yml              # GitHub Action metadata (composite)
+├── pyproject.toml          # packaging; entry points duck-diff, duck-diff-mcp
+├── conftest.py             # sandbox-tolerant pytest fixtures
+├── samples/report.html     # generated example of the HTML reporter
 ├── duck_diff/
-│   ├── io.py            # universal loader (parquet/csv/tsv/json/sqlite)
-│   ├── schema_diff.py   # DESCRIBE-based schema drift
-│   ├── engine.py        # DuckDiffer core (keyed & keyless SQL algebra)
-│   ├── reporter.py      # rich / ASCII / markdown / json formatters
-│   ├── cli.py           # typer-first CLI with argparse fallback
-│   └── action.py        # GitHub Action runtime (python -m duck_diff.action)
-└── tests/test_diff.py   # complete offline suite
+│   ├── io.py               # universal loader (parquet/csv/tsv/json/sqlite)
+│   ├── schema_diff.py      # DESCRIBE-based schema drift
+│   ├── engine.py           # DuckDiffer: keyed/keyless SQL algebra + stats
+│   ├── reporter.py         # rich/ASCII · markdown · json · interactive html
+│   ├── cli.py              # typer-first CLI (argparse fallback), exit gating
+│   ├── action.py           # GitHub Action runtime
+│   └── mcp_server.py       # stdio MCP server (diff_datasets, inspect_schema_drift, get_column_stats)
+└── tests/test_diff.py      # complete offline suite
 ```
 
 ## 📄 License
