@@ -1,0 +1,64 @@
+name: "duck-diff"
+description: >-
+  Blazing-fast, constant-memory dataset diffing (Parquet, CSV, TSV, JSON,
+  SQLite) powered by an embedded DuckDB SQL engine. Detects schema drift,
+  row additions/deletions and cell-level changes; gates data pipelines with
+  strict exit codes and publishes drift badges for pull requests.
+branding:
+  icon: "database"
+  color: "yellow"
+
+inputs:
+  source_path:
+    description: >-
+      Baseline dataset: a file path (.parquet/.csv/.tsv/.json/.jsonl/.ndjson)
+      or a SQLite URI of the form sqlite://<db_path>#<table_name>.
+    required: true
+  target_path:
+    description: "Candidate dataset to compare against the baseline (same accepted forms)."
+    required: true
+  key_columns:
+    description: >-
+      Comma-separated primary-key columns for row matching (e.g. "id,region").
+      Omit to fall back to keyless whole-row hashing.
+    required: false
+    default: ""
+  epsilon:
+    description: "Absolute floating-point tolerance applied to numeric comparisons."
+    required: false
+    default: "0.0"
+  fail_on_drift:
+    description: "Exit non-zero (fail the step) when any drift is detected: 'true' or 'false'."
+    required: false
+    default: "true"
+
+outputs:
+  drift_detected:
+    description: "'true' when row-level or schema drift was found, otherwise 'false'."
+    value: ${{ steps.diff.outputs.drift_detected }}
+  modified_rows:
+    description: "Number of matched rows with at least one changed cell."
+    value: ${{ steps.diff.outputs.modified_rows }}
+  schema_drift:
+    description: "'true' when columns were added/removed or column types drifted."
+    value: ${{ steps.diff.outputs.schema_drift }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install duck-diff
+      shell: bash
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install .
+
+    - name: Run duck-diff
+      id: diff
+      shell: bash
+      env:
+        INPUT_SOURCE_PATH: ${{ inputs.source_path }}
+        INPUT_TARGET_PATH: ${{ inputs.target_path }}
+        INPUT_KEY_COLUMNS: ${{ inputs.key_columns }}
+        INPUT_EPSILON: ${{ inputs.epsilon }}
+        INPUT_FAIL_ON_DRIFT: ${{ inputs.fail_on_drift }}
+      run: python -m duck_diff.action
