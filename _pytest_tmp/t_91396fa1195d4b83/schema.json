@@ -1,0 +1,13 @@
+{
+  "shared_columns": [
+    [
+      "id",
+      "BIGINT",
+      "BIGINT"
+    ]
+  ],
+  "only_in_a": [],
+  "only_in_b": [],
+  "type_mismatches": [],
+  "has_schema_drift": false
+}

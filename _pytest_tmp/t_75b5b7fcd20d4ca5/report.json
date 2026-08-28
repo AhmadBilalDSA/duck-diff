@@ -1,0 +1,94 @@
+{
+  "tool": "duck-diff",
+  "mode": "keyed",
+  "source": "C:\\Users\\S S C\\Downloads\\Programs\\duck_diff\\_pytest_tmp\\t_75b5b7fcd20d4ca5\\a.csv",
+  "target": "C:\\Users\\S S C\\Downloads\\Programs\\duck_diff\\_pytest_tmp\\t_75b5b7fcd20d4ca5\\b.csv",
+  "keys": [
+    "id"
+  ],
+  "params": {
+    "epsilon": 0.0,
+    "ignore_case": false,
+    "sample_limit": 20
+  },
+  "schema": {
+    "shared_columns": [
+      [
+        "id",
+        "BIGINT",
+        "BIGINT"
+      ],
+      [
+        "v",
+        "VARCHAR",
+        "VARCHAR"
+      ]
+    ],
+    "only_in_a": [],
+    "only_in_b": [],
+    "type_mismatches": [],
+    "has_schema_drift": false
+  },
+  "summary": {
+    "total_rows_a": 1,
+    "total_rows_b": 1,
+    "identical_rows_count": 0,
+    "modified_rows_count": 1,
+    "added_rows_count": 0,
+    "deleted_rows_count": 0,
+    "column_drift_stats": {
+      "v": {
+        "mismatches": 1,
+        "drift_pct": 100.0
+      }
+    },
+    "sample_mismatches": [
+      [
+        "1",
+        "v",
+        "x",
+        "y"
+      ]
+    ],
+    "column_stats": {
+      "id": {
+        "kind": "numeric",
+        "null_count_a": 0,
+        "null_count_b": 0,
+        "null_count_diff": 0,
+        "mean_a": 1.0,
+        "mean_b": 1.0,
+        "mean_diff": 0.0,
+        "min_a": 1.0,
+        "min_b": 1.0,
+        "min_diff": 0.0,
+        "max_a": 1.0,
+        "max_b": 1.0,
+        "max_diff": 0.0,
+        "mean_pct_shift": 0.0
+      },
+      "v": {
+        "kind": "categorical",
+        "null_count_a": 0,
+        "null_count_b": 0,
+        "null_count_diff": 0,
+        "distinct_a": 1,
+        "distinct_b": 1,
+        "distinct_count_diff": 0
+      }
+    },
+    "drift_detected": true
+  },
+  "sample_mismatches": [
+    [
+      "1",
+      "v",
+      "x",
+      "y"
+    ]
+  ],
+  "drift_detected": true,
+  "schema_drift": false,
+  "warnings": [],
+  "duration_seconds": 0.214114
+}

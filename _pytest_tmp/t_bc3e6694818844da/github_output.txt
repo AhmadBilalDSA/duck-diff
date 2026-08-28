@@ -1,0 +1,3 @@
+drift_detected=true
+modified_rows=1
+schema_drift=false

@@ -1,0 +1,9 @@
+{
+  "tier": "community",
+  "hwid": "85b037e5e3eb3fa644486b16c40294b7827578066f0f7abe1fb4b97059d3cd67",
+  "activated_at": 1787761925.9468892,
+  "expires_at": 0.0,
+  "public_key_hex": "445b9ab1a49070d309c96984c155c1a1b7986f87eda936a911ee45efe91b5ef9",
+  "signature_hex": "f1de2d6b248e7983589b34b1c9484b2fdd169d6b1f7df0f60b9d29478531811da85c4ee4d8d5605932360adad7497dfad091ef4c7697a5de3a45ffb4efcf3600",
+  "is_valid": true
+}

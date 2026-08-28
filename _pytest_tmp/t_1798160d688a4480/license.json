@@ -1,0 +1,9 @@
+{
+  "tier": "pro_annual",
+  "hwid": "85b037e5e3eb3fa644486b16c40294b7827578066f0f7abe1fb4b97059d3cd67",
+  "activated_at": 1787762026.3396332,
+  "expires_at": 1787848426.3396332,
+  "public_key_hex": "6143e9413c1bc3acca0b2a047a27da21783b83596285510d0b4c91cae180aa5d",
+  "signature_hex": "c429c405ab13ddcb6994b0f976946427e15fb09efedda0b4d7fedaf854f9b7b1b9b2e4d90978127f5b1710ed492ee79baaf532b40ab1ef67394211d6591ade05",
+  "is_valid": true
+}

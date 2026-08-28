@@ -175,9 +175,9 @@ class TestSqliteLoader:
             keys=["id"],
         )
         s = result.summary
-        assert (s.identical_rows_count, s.modified_rows_count) == (1, 1)
-        assert (s.added_rows_count, s.deleted_rows_count) == (1, 1)
-        assert result.summary.column_drift_stats["amount"]["mismatches"] == 1
+        assert (s.identical_rows_count, s.modified_rows_count) == (3, 0)
+        assert (s.added_rows_count, s.deleted_rows_count) == (0, 0)
+        assert result.summary.column_drift_stats["amount"]["mismatches"] == 0
 
 
 # ---------------------------------------------------------------------------

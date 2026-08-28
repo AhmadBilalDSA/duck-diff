@@ -1,0 +1,9 @@
+{
+  "tier": "founder_lifetime",
+  "hwid": "85b037e5e3eb3fa644486b16c40294b7827578066f0f7abe1fb4b97059d3cd67",
+  "activated_at": 1787762026.2700663,
+  "expires_at": 0.0,
+  "public_key_hex": "e5f599420d1ed34f4823e1618a5fdbc8ee015fc6cb028f6211c8cb3709c230fc",
+  "signature_hex": "f39592193ce45272c3a42f2348fdfc265f78dae0b78ab48939443a6b7c9f6603f80524d5558548dfeb4203dde7d9bf233d5b72e023a4dc7f18171a69cd73c20d",
+  "is_valid": true
+}

@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>duck-diff report</title>
+<style>
+:root{--bg:#f6f8fa;--card:#fff;--ink:#1e293b;--mut:#64748b;--ok:#16a34a;--bad:#dc2626;
+--add:#dcfce7;--del:#fee2e2;--mod:#fef9c3;--line:#e2e8f0;--acc:#f59e0b}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);
+font:14px/1.5 "Segoe UI",system-ui,Arial,sans-serif}
+.wrap{max-width:1100px;margin:0 auto;padding:24px 18px 60px}
+h1{font-size:22px;margin:0 0 4px}.sub{color:var(--mut);margin:0 0 18px;font-size:13px}
+.chip{display:inline-block;background:#fff;border:1px solid var(--line);border-radius:999px;
+padding:2px 10px;margin:2px 4px 2px 0;font-size:12px;color:#334155}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin:14px 0 26px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+.card .k{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut)}
+.card .v{font-size:24px;font-weight:700;margin-top:4px}.card.ok .v{color:var(--ok)}
+.card.bad .v{color:var(--bad)}.card.warn .v{color:#b45309}
+h2{font-size:15px;margin:30px 0 8px;text-transform:uppercase;letter-spacing:.05em;color:#334155}
+table{border-collapse:collapse;width:100%;background:var(--card);border:1px solid var(--line);
+border-radius:10px;overflow:hidden;font-size:13px}
+th,td{padding:7px 11px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{background:#0f172a;color:#fff;font-weight:600;font-size:12px}
+tr:last-child td{border-bottom:none}td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+tr.add td{background:var(--add)}tr.del td{background:var(--del)}td.modcell{background:var(--mod)}
+.old{color:#9f1239;text-decoration:line-through;margin-right:6px}
+.new{color:#166534;font-weight:600}.arr{color:var(--mut);margin:0 4px}
+.controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:10px 0}
+input[type=search],select{padding:7px 10px;border:1px solid var(--line);border-radius:8px;
+background:#fff;font:inherit}
+label.toggle{display:flex;align-items:center;gap:6px;font-size:13px;color:#334155}
+.pager{display:flex;gap:8px;align-items:center;margin-top:12px;font-size:13px;color:var(--mut)}
+button{padding:6px 12px;border:1px solid var(--line);background:#fff;border-radius:8px;cursor:pointer;font:inherit}
+button:disabled{opacity:.45;cursor:default}
+details{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin:8px 0}
+summary{cursor:pointer;font-weight:600}
+ul.clean{margin:6px 0;padding-left:18px}.muted{color:var(--mut)}
+code{background:#f1f5f9;border-radius:5px;padding:1px 5px;font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>🦆 duck-diff report</h1>
+<p class="sub">C:\Users\S S C\Downloads\Programs\duck_diff\_pytest_tmp\t_94e3d635a4a24644\a.csv vs C:\Users\S S C\Downloads\Programs\duck_diff\_pytest_tmp\t_94e3d635a4a24644\b.csv · 0.17s</p>
+<div><span class='chip'><strong>C:\Users\S S C\Downloads\Programs\duck_diff\_pytest_tmp\t_94e3d635a4a24644\a.csv</strong> → <strong>C:\Users\S S C\Downloads\Programs\duck_diff\_pytest_tmp\t_94e3d635a4a24644\b.csv</strong></span><span class='chip'>mode: keyed</span><span class='chip'>key: id</span></div>
+
+<h2>Executive summary</h2>
+<div class="cards" id="cards"></div>
+
+<h2>Schema</h2>
+<p class='muted'>Schemas are identical. ✔</p>
+
+<h2>Column statistical drift</h2>
+<div class="controls"><input type="search" id="statSearch" placeholder="Filter columns…"></div>
+<table id='statsTable'><thead><tr><th>Column</th><th>Kind</th><th class=num>Null Δ</th><th class=num>Mean Δ</th><th class=num>Min Δ</th><th class=num>Max Δ</th><th class=num>Shift %</th><th class=num>Distinct Δ</th></tr></thead><tbody><tr><td>id</td><td>numeric</td><td class=num>0</td><td class=num>0.333333</td><td class=num>0</td><td class=num>1</td><td class=num>16.6667%</td><td class=num>—</td></tr><tr><td>v</td><td>categorical</td><td class=num>0</td><td class=num>—</td><td class=num>—</td><td class=num>—</td><td class=num>—</td><td class=num>0</td></tr></tbody></table>
+
+<h2>Data diff preview <span class="muted" style="text-transform:none;font-size:12px">(sampled)</span></h2>
+<div class="controls">
+  <input type="search" id="search" placeholder="Search key or values…" style="min-width:240px">
+  <label class="toggle"><input type="checkbox" id="onlyDrift" checked> mismatches only</label>
+  <select id="statusFilter">
+    <option value="">all statuses</option><option value="modified">modified</option>
+    <option value="added">added</option><option value="deleted">deleted</option>
+  </select>
+  <select id="pageSize"><option>25</option><option selected>50</option><option>100</option>
+  <option value="100000000">all</option></select>
+</div>
+<table id="diffTable"><thead><tr><th style="width:90px">Status</th><th style="width:22%">Key</th>
+<th>Changes (old → new)</th></tr></thead><tbody id="diffBody"></tbody></table>
+<div class="pager">
+  <button id="prevPage">‹ Prev</button><span id="pageInfo"></span><button id="nextPage">Next ›</button>
+</div>
+<p class="muted" style="margin-top:26px;font-size:12px">Generated by duck-diff v1.1.0 ·
+standalone offline file — no external assets.</p>
+</div>
+<script>
+const REPORT = {"summary": {"total_rows_a": 3, "total_rows_b": 3, "identical_rows_count": 1, "modified_rows_count": 1, "added_rows_count": 1, "deleted_rows_count": 1, "column_drift_stats": {"v": {"mismatches": 1, "drift_pct": 50.0}}, "sample_mismatches": [["2", "v", "old", "new"], ["3", "__deleted_row__", "3||dropme", null], ["NULL", "__added_row__", null, "4||brand-new"]], "column_stats": {"id": {"kind": "numeric", "null_count_a": 0, "null_count_b": 0, "null_count_diff": 0, "mean_a": 2.0, "mean_b": 2.3333333333333335, "mean_diff": 0.333333, "min_a": 1.0, "min_b": 1.0, "min_diff": 0.0, "max_a": 3.0, "max_b": 4.0, "max_diff": 1.0, "mean_pct_shift": 16.6667}, "v": {"kind": "categorical", "null_count_a": 0, "null_count_b": 0, "null_count_diff": 0, "distinct_a": 3, "distinct_b": 3, "distinct_count_diff": 0}}, "drift_detected": true}, "schema": {"shared_columns": [["id", "BIGINT", "BIGINT"], ["v", "VARCHAR", "VARCHAR"]], "only_in_a": [], "only_in_b": [], "type_mismatches": [], "has_schema_drift": false}, "schema_drift": false, "drift_detected": true, "mode": "keyed", "keys": ["id"], "duration_seconds": 0.16718200000013894, "preview": [{"status": "modified", "key": "2", "cells": [["v", "old", "new"]]}, {"status": "added", "key": "NULL", "cells": [["row", "", "4||brand-new"]]}, {"status": "deleted", "key": "3", "cells": [["row", "3||dropme", ""]]}]};
+function esc(s){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;")
+ .replace(/>/g,"&gt;").replace(/"/g,"&quot;")}
+const s=REPORT.summary;
+document.getElementById("cards").innerHTML=[
+ ["Total rows",`${s.total_rows_a.toLocaleString()} / ${s.total_rows_b.toLocaleString()}`,""],
+ ["Unchanged ✅",s.identical_rows_count.toLocaleString(),"ok"],
+ ["Modified 🔴",s.modified_rows_count.toLocaleString(),"warn"],
+ ["Added ➕",s.added_rows_count.toLocaleString(),"ok"],
+ ["Deleted ➖",s.deleted_rows_count.toLocaleString(),"bad"],
+ ["Schema changes",REPORT.schema_drift?"yes":"no",REPORT.schema_drift?"bad":"ok"],
+ ["Duration",REPORT.duration_seconds.toFixed(2)+"s",""]
+].map(c=>`<div class="card ${c[2]}"><div class="k">${c[0]}</div><div class="v">${c[1]}</div></div>`).join("");
+
+let view=REPORT.preview.slice(), page=1;
+function filtered(){
+ const q=document.getElementById("search").value.toLowerCase();
+ const only=document.getElementById("onlyDrift").checked;
+ const st=document.getElementById("statusFilter").value;
+ return view.filter(r=>{
+   if(st && r.status!==st) return false;
+   if(!only && r.status==="identical") return true;
+   if(!q) return true;
+   return (r.key+" "+r.cells.map(c=>c.join(" ")).join(" ")).toLowerCase().includes(q);
+ });
+}
+function render(){
+ const size=parseInt(document.getElementById("pageSize").value,10);
+ const rows=filtered(); const pages=Math.max(1,Math.ceil(rows.length/size));
+ page=Math.min(page,pages);
+ const slice=rows.slice((page-1)*size,page*size);
+ document.getElementById("diffBody").innerHTML = slice.length? slice.map(r=>{
+   const cls=r.status==="added"?"add":(r.status==="deleted"?"del":"");
+   const cells=r.cells.map(c=>{
+     if(c[1]===null&&c[2]===null) return "";
+     if(r.status==="added") return `<div><span class="new">${esc(c[2])}</span></div>`;
+     if(r.status==="deleted") return `<div><span class="old">${esc(c[1])}</span></div>`;
+     return `<div class="modcell"><span class="old">${esc(c[1])}</span>`+
+            `<span class="arr">→</span><span class="new">${esc(c[2])}</span></div>`;
+   }).join("");
+   return `<tr class="${cls}"><td>${r.status}</td><td><code>${esc(r.key)}</code></td><td>${cells}</td></tr>`;
+ }).join("") : `<tr><td colspan="3" class="muted">No matching rows.</td></tr>`;
+ document.getElementById("pageInfo").textContent=`page ${page} / ${pages} · ${rows.length} rows`;
+ document.getElementById("prevPage").disabled=page<=1;
+ document.getElementById("nextPage").disabled=page>=pages;
+}
+["search","onlyDrift","statusFilter","pageSize"].forEach(id=>
+ document.getElementById(id).addEventListener("input",()=>{page=1;render()}));
+document.getElementById("prevPage").onclick=()=>{page--;render()};
+document.getElementById("nextPage").onclick=()=>{page++;render()};
+document.getElementById("statSearch").addEventListener("input",e=>{
+ const q=e.target.value.toLowerCase();
+ document.querySelectorAll("#statsTable tbody tr").forEach(tr=>{
+   tr.style.display=tr.textContent.toLowerCase().includes(q)?"":"none";});
+});
+render();
+</script>
+</body>
+</html>
