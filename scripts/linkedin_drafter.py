@@ -1,4 +1,3 @@
-cat << 'EOF' > scripts/linkedin_drafter.py
 import os
 import requests
 from datetime import datetime, timedelta, timezone
@@ -67,4 +66,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-EOF
