@@ -420,32 +420,102 @@ def create_banner_figure(ctx):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    import matplotlib.patheffects as pe
+    import numpy as np
+    from matplotlib.patches import Rectangle
+
+    BG_TOP = "#1e293b"
+    BG_BOT = "#090d16"
+    GRID_COLOR = "#1e293b"
+    BORDER_COLOR = "#334155"
+    TEXT_PRIMARY = "#f8fafc"
+    TEXT_SECONDARY = "#94a3b8"
+    TEXT_DIM = "#64748b"
+    ACCENT_DEFAULT = "#38bdf8"
+
+    repo_key = (ctx.get("repository_url") or "").lower()
+    if "tidb" in repo_key or "duck-diff" in repo_key:
+        accent = "#34d399"
+    else:
+        accent = ACCENT_DEFAULT
 
     fig, ax = plt.subplots(figsize=(12, 6.75), dpi=100)
-    fig.patch.set_facecolor("#0f172a")
-    ax.set_facecolor("#0f172a")
+    fig.patch.set_facecolor(BG_BOT)
+    ax.set_facecolor(BG_BOT)
     ax.set_xlim(0, 12)
     ax.set_ylim(0, 6.75)
     ax.axis("off")
     fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
 
-    title = ctx["title"]
-    if len(title) > 70:
-        title = title[:67].rsplit(" ", 1)[0] + "..."
+    # --- vertical gradient background ---
+    top_rgb = np.array([30, 41, 59], dtype=np.float64) / 255.0
+    bot_rgb = np.array([9, 13, 22], dtype=np.float64) / 255.0
+    y_col = np.linspace(0, 1, 675).reshape(-1, 1)
+    grad = bot_rgb + y_col * (top_rgb - bot_rgb)
+    grad = np.repeat(grad[:, np.newaxis, :], 1200, axis=1).astype(np.float64)
+    ax.imshow(grad, extent=[0, 12, 0, 6.75], aspect="auto", interpolation="nearest",
+              origin="lower", zorder=0)
 
+    # --- subtle geometric grid overlay ---
+    for x in np.arange(0.0, 12.01, 1.5):
+        ax.axvline(x, color=GRID_COLOR, alpha=0.35, lw=0.5, zorder=1)
+    for y in np.arange(0.0, 6.76, 1.125):
+        ax.axhline(y, color=GRID_COLOR, alpha=0.35, lw=0.5, zorder=1)
+
+    # --- faint code watermark ---
+    wm_lines = [
+        "def reconcile(datasets):",
+        "    buf = allocate(constant=True)",
+        "    for row in stream.iter():",
+        "        drift.fingerprint(row)",
+        "    return diff.schema_audit()",
+    ]
+    for i, ln in enumerate(wm_lines):
+        ax.text(7.8, 0.9 + i * 0.36, ln, color=GRID_COLOR, fontsize=7,
+                family="monospace", alpha=0.45, zorder=1)
+
+    # --- accent border card ---
+    border = Rectangle((0.12, 0.12), 11.76, 6.51, linewidth=1.5,
+                        edgecolor=BORDER_COLOR, facecolor="none", zorder=2)
+    ax.add_patch(border)
+
+    # --- top accent bar + glow ---
+    bar_h = 0.06
+    ax.add_patch(Rectangle((0, 6.75 - bar_h), 12, bar_h,
+                            facecolor=accent, edgecolor="none", lw=0, zorder=5))
+    ax.add_patch(Rectangle((0, 6.75 - bar_h - 0.04), 12, 0.04,
+                            facecolor=accent, edgecolor="none", lw=0, alpha=0.3, zorder=5))
+
+    # --- top badge: repo / tool name, bold monospace uppercase ---
     if ctx.get("number"):
-        badge = f"PR #{ctx['number']}  //  {ctx['repository_url']}"
+        badge_raw = f"PR #{ctx['number']}  //  {ctx['repository_url']}"
     else:
-        badge = f"{ctx['repository_url']}  //  open-source engineering"
+        badge_raw = f"{ctx['repository_url']}  //  open-source engineering"
+    badge = badge_raw.upper()
+    ax.text(0.55, 6.05, badge, color=TEXT_SECONDARY, fontsize=11.5,
+            va="center", family="monospace", fontweight="bold", zorder=4)
 
-    ax.text(0.6, 4.7, badge, color="#94a3b8", fontsize=13, va="center", family="monospace")
-    ax.text(0.6, 3.4, title, color="#f8fafc", fontsize=26, va="center",
-            family="sans-serif", fontweight="bold", wrap=True)
-    ax.text(0.6, 2.0, "Automated technical storytelling  powered by GitHub Actions + duck-diff",
-            color="#38bdf8", fontsize=13, va="center", family="monospace")
-    ax.plot([0.6, 11.4], [1.35, 1.35], color="#334155", lw=2)
-    ax.text(0.6, 0.6, "github.com/" + GITHUB_USERNAME + "/" + REPO_NAME,
-            color="#64748b", fontsize=12, va="center", family="monospace")
+    # --- center header: the engineering problem / metric callout ---
+    title = ctx["title"]
+    if len(title) > 62:
+        title = title[:59].rsplit(" ", 1)[0] + "..."
+    ax.text(0.55, 3.9, title, color=TEXT_PRIMARY, fontsize=23, va="center",
+            family="sans-serif", fontweight="bold", wrap=True, zorder=4,
+            path_effects=[pe.withStroke(linewidth=1, foreground=BG_BOT)])
+
+    # --- subtitle / tech tagline ---
+    ax.text(0.55, 2.6, "Automated technical storytelling", color=accent,
+            fontsize=13, va="center", family="monospace", zorder=4)
+
+    # --- separator ---
+    ax.plot([0.55, 11.45], [2.15, 2.15], color=BORDER_COLOR, lw=1.5, zorder=4)
+
+    # --- bottom footer ---
+    ax.text(0.55, 0.45, "Ahmad Bilal \u2022 Upstream OSS Engineering",
+            color=TEXT_DIM, fontsize=11, va="center", family="monospace", zorder=4)
+    ax.text(11.45, 0.45, "</>", color=accent, fontsize=12, va="center",
+            ha="right", family="monospace", fontweight="bold", zorder=4)
+
     return fig
 
 
@@ -453,7 +523,7 @@ def generate_banner(ctx):
     import matplotlib.pyplot as plt
 
     fig = create_banner_figure(ctx)
-    fig.savefig(BANNER_PATH, facecolor="#0f172a")
+    fig.savefig(BANNER_PATH, facecolor="#090d16")
     plt.close(fig)
     print(f"[banner] generated {BANNER_PATH}")
     return BANNER_PATH
@@ -465,7 +535,7 @@ def render_banner_buffer(ctx):
 
     fig = create_banner_figure(ctx)
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", facecolor="#0f172a")
+    fig.savefig(buf, format="png", facecolor="#090d16")
     plt.close(fig)
     data = buf.getvalue()
     buf.close()
