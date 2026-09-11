@@ -1,0 +1,24 @@
+cat << 'EOF' > .github/workflows/linkedin_auto_drafter.yml
+name: LinkedIn Technical Drafter
+
+on:
+  schedule:
+    - cron: '0 18 * * 0'
+  workflow_dispatch:
+
+jobs:
+  draft_post:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install requests
+      - name: Run Drafter
+        env:
+          GH_PAT: ${{ secrets.GITHUB_TOKEN }}
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python scripts/linkedin_drafter.py
+EOF
