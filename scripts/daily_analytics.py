@@ -1,9 +1,10 @@
 """daily_analytics.py
 
-Fault-tolerant daily ELT pipeline that extracts AhmadBilalDSA's GitHub public
-events from the last 24 hours, transforms them into structured developer
-metrics, appends the row to a CSV dataset, and dispatches a Discord standup
-embed confirming the pipeline run.
+Read-only daily ELT telemetry. Extracts AhmadBilalDSA's public GitHub events
+from the last 24 hours, transforms them into structured developer metrics,
+appends the row to a CSV dataset, and posts a terse internal devops audit to
+Discord. The GitHub API is contacted with GET only - this script never writes,
+posts, comments, or reviews on public pull requests or issues.
 """
 
 import csv
@@ -22,20 +23,26 @@ CSV_PATH = os.path.join(
     "developer_metrics.csv",
 )
 CSV_HEADERS = ["Date", "Commits", "PRs_Opened", "PRs_Reviewed", "Issues"]
+COMMIT_MESSAGE = "chore(telemetry): update daily developer metrics [skip ci]"
 
 EVENTS_URL = f"https://api.github.com/users/{GITHUB_USERNAME}/events/public"
 EMBED_COLOR = 0x38BDF8
 
 
-def _headers():
+def _utcnow():
+    return datetime.now(timezone.utc)
+
+
+def _gh_get(url, params=None):
+    """GET-only GitHub call. Enforced read-only: no other method is ever issued."""
     headers = {"Accept": "application/vnd.github+json"}
     if GH_TOKEN:
         headers["Authorization"] = f"token {GH_TOKEN}"
-    return headers
-
-
-def _utcnow():
-    return datetime.now(timezone.utc)
+    try:
+        return requests.get(url, headers=headers, params=params, timeout=30)
+    except requests.RequestException as exc:
+        print(f"[api] GET {url} error: {exc}")
+        return None
 
 
 def extract_events():
@@ -44,15 +51,8 @@ def extract_events():
     all_events = []
     page = 1
     while page <= 5:
-        try:
-            resp = requests.get(
-                EVENTS_URL,
-                headers=_headers(),
-                params={"per_page": 100, "page": page},
-                timeout=30,
-            )
-        except requests.RequestException as exc:
-            print(f"[api] events page {page} error: {exc}")
+        resp = _gh_get(EVENTS_URL, params={"per_page": 100, "page": page})
+        if resp is None:
             break
         if resp.status_code == 403 and resp.headers.get("X-RateLimit-Remaining") == "0":
             print("[api] rate limit hit; stopping event fetch.")
@@ -110,9 +110,21 @@ def transform(events):
 
 
 def load(metrics, today_str):
-    """Append today's row to the CSV dataset; create the file with headers if missing."""
+    """Append today's row to the CSV dataset; create the file with headers if missing.
+
+    Idempotent: if today's UTC date is already logged, the append is skipped so a
+    re-run produces no diff and the workflow can skip its commit cleanly.
+    """
     os.makedirs(os.path.dirname(CSV_PATH), exist_ok=True)
-    file_exists = os.path.isfile(CSV_PATH)
+    if os.path.isfile(CSV_PATH):
+        try:
+            with open(CSV_PATH, "r", newline="", encoding="utf-8") as f:
+                existing = {row["Date"] for row in csv.DictReader(f)}
+            if today_str in existing:
+                print(f"[csv] {today_str} already logged (idempotent); skipping append.")
+                return True
+        except OSError as exc:
+            print(f"[csv] read error: {exc}")
     row = {
         "Date": today_str,
         "Commits": metrics["Commits"],
@@ -123,7 +135,7 @@ def load(metrics, today_str):
     try:
         with open(CSV_PATH, "a", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
-            if not file_exists or os.path.getsize(CSV_PATH) == 0:
+            if os.path.getsize(CSV_PATH) == 0:
                 writer.writeheader()
             writer.writerow(row)
         print(f"[csv] row appended: {row}")
@@ -134,22 +146,22 @@ def load(metrics, today_str):
 
 
 def build_embed(metrics, today_str, csv_ok):
-    """Build a Discord embed payload for the daily standup."""
-    status = "CSV updated successfully" if csv_ok else "CSV update failed"
+    """Build a terse internal devops audit embed; no conversational fluff."""
+    status = "appended" if csv_ok else "write failed"
+    prs_touched = metrics["PRs_Opened"] + metrics["PRs_Reviewed"]
     embed = {
-        "title": "\U0001F4CA Daily Developer Standup",
-        "description": f"Metrics for **{today_str}** — {GITHUB_USERNAME}",
+        "title": "Engineering Activity Snapshot",
         "color": EMBED_COLOR if csv_ok else 0xEF4444,
         "fields": [
-            {"name": "Commits", "value": str(metrics["Commits"]), "inline": True},
-            {"name": "PRs Opened", "value": str(metrics["PRs_Opened"]), "inline": True},
-            {"name": "PRs Reviewed", "value": str(metrics["PRs_Reviewed"]), "inline": True},
+            {"name": "Date/UTC", "value": today_str, "inline": True},
+            {"name": "Commits (Logged)", "value": str(metrics["Commits"]), "inline": True},
+            {"name": "PRs Touched", "value": str(prs_touched), "inline": True},
             {"name": "Issues Touched", "value": str(metrics["Issues"]), "inline": True},
-            {"name": "Pipeline Status", "value": status, "inline": False},
+            {"name": "Dataset", "value": f"data/developer_metrics.csv: {status}", "inline": False},
         ],
         "footer": {"text": f"daily_analytics.py \u00b7 {_utcnow().strftime('%Y-%m-%d %H:%M')} UTC"},
     }
-    return {"username": "Daily Analytics", "embeds": [embed]}
+    return {"username": "Telemetry", "embeds": [embed]}
 
 
 def dispatch_discord(payload):

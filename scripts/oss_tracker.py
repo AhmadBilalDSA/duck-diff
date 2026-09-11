@@ -1,16 +1,20 @@
 """oss_tracker.py
 
-Fault-tolerant open source activity tracker for Ahmad Bilal's portfolio.
+Read-only open source activity telemetry for Ahmad Bilal's portfolio.
 
 Sweeps the GitHub search and REST APIs for pull requests, issue updates, and
 review requests authored by or assigned to AhmadBilalDSA (excluding beginner
 repos), inspects every open portfolio PR for CI, merge-conflict, and
 maintainer-review state, extracts the actual text snippet of the latest
-maintainer ask when a response or change is requested, and posts a Discord
-card that explicitly separates clean repositories from repositories needing
-attention with the exact flag reason. Every API call is guarded by try/except
-and falls back to partial reports when rate limits or transient errors hit -
-the scheduled workflow never crashes on API trouble.
+maintainer ask when a response or change is requested, and posts a terse
+internal devops audit to Discord that separates clean repositories from
+repositories needing attention with the exact flag reason and raw quote.
+Every API call is guarded by try/except and falls back to partial reports when
+rate limits or transient errors hit - the scheduled workflow never crashes on
+API trouble.
+
+Read-only guarantee: the GitHub API is contacted with GET only. This script
+never writes, posts, comments, or reviews on public pull requests or issues.
 """
 
 import json
@@ -260,7 +264,7 @@ def _maintainer_feedback(repo, number):
         break
 
     if change_requested:
-        return FLAG_CHANGE_REQUEST, "(reviewer requested changes; no comment body to quote)"
+        return FLAG_CHANGE_REQUEST, ""
     return None, ""
 
 
@@ -364,9 +368,43 @@ def _fetch_open_issues():
     return out
 
 
+def _fetch_commits_logged():
+    """Count commits pushed in the last 24h from public event telemetry (GET only)."""
+    cutoff = _utcnow() - timedelta(hours=24)
+    total = 0
+    page = 1
+    while page <= 5:
+        resp = requests.get(
+            f"{API_BASE}/users/{GITHUB_USERNAME}/events/public",
+            headers=_headers(),
+            params={"per_page": 100, "page": page},
+            timeout=30,
+        )
+        if resp.status_code == 403 and resp.headers.get("X-RateLimit-Remaining") == "0":
+            raise _GitHubRateLimit("commit events")
+        if resp.status_code != 200:
+            print(f"[api] events page {page} failed ({resp.status_code}): {resp.text[:200]}")
+            break
+        events = resp.json()
+        if not events:
+            break
+        stop = False
+        for event in events:
+            created = _parse_dt(event.get("created_at") or "")
+            if created is None or created < cutoff:
+                stop = True
+                break
+            if (event.get("type") or "") == "PushEvent":
+                total += len((event.get("payload") or {}).get("commits") or [])
+        if stop:
+            break
+        page += 1
+    return total
+
+
 def collect_activity():
     """Collect all GitHub activity; each stage is rate-limit and error tolerant."""
-    data = {"open_prs": [], "merged_prs": [], "review_requests": [], "open_issues": [], "notes": []}
+    data = {"open_prs": [], "merged_prs": [], "review_requests": [], "open_issues": [], "commits_logged": 0, "notes": []}
 
     def _guarded(label, fn, key):
         try:
@@ -380,6 +418,7 @@ def collect_activity():
     _guarded("merged PRs", _fetch_merged_prs, "merged_prs")
     _guarded("review requests", _fetch_review_requests, "review_requests")
     _guarded("issues", _fetch_open_issues, "open_issues")
+    _guarded("commit events", _fetch_commits_logged, "commits_logged")
 
     for entry in data["open_prs"][:MAX_OPEN_AUDS]:
         _audit_open_pr(entry)
@@ -512,19 +551,16 @@ def build_report(data):
             "issues": len(data["open_issues"]),
             "attention": len(attention),
             "clean": len(clean),
+            "commits": data["commits_logged"],
+            "prs_touched": len(data["open_prs"]) + len(data["merged_prs"]) + len(data["review_requests"]),
             "portfolio": portfolio_seen,
         },
     }
 
 
 def build_payload(report):
+    """Internal devops audit embed. Raw quotes only; no conversational wrap-ups."""
     counts = report["counts"]
-    snapshot = (
-        f"**Snapshot:** {counts['open']} open PRs \u00b7 {counts['merged']} merged (7d) \u00b7 "
-        f"{counts['attention']} flagged \u00b7 {counts['reviews']} review requests \u00b7 "
-        f"{counts['issues']} issues touched"
-    )
-    portfolio = ", ".join(_repo_label(r) for r in counts["portfolio"]) or "none this cycle"
 
     if counts["attention"]:
         color = RED
@@ -536,46 +572,22 @@ def build_payload(report):
         color = EMERALD
 
     fields = [
-        {
-            "name": "\U0001F534 Repositories Needing Attention",
-            "value": _field_value(
-                report["attention"],
-                "No repos need attention \u2014 all portfolio checks are green.",
-            ),
-            "inline": False,
-        },
-        {
-            "name": "\U0001F7E2 Clean Repositories",
-            "value": _field_value(report["clean"], "None this cycle."),
-            "inline": False,
-        },
-        {
-            "name": "Active Reviews",
-            "value": _field_value(report["active"], "No pending review discussions."),
-            "inline": False,
-        },
-        {
-            "name": "Merged PRs (7d)",
-            "value": _field_value(report["merged"], "No recent merges in the window."),
-            "inline": False,
-        },
-        {
-            "name": "Other Open Items",
-            "value": _field_value(report["open_items"], "No stray open items outside the portfolio."),
-            "inline": False,
-        },
+        {"name": "Date/UTC", "value": _utcnow().strftime("%Y-%m-%d %H:%M") + " UTC", "inline": True},
+        {"name": "Commits (Logged)", "value": str(counts["commits"]), "inline": True},
+        {"name": "PRs Touched", "value": str(counts["prs_touched"]), "inline": True},
+        {"name": "Clean Repos", "value": _field_value(report["clean"], "--"), "inline": False},
+        {"name": "Flagged Repos", "value": _field_value(report["attention"], "--"), "inline": False},
     ]
     if report["notes"]:
-        fields.append({"name": "Tracker Notes", "value": _field_value([f"- {n}" for n in report["notes"]], "-"), "inline": False})
+        fields.append({"name": "Notes", "value": _field_value([f"- {n}" for n in report["notes"]], "-"), "inline": False})
 
     embed = {
-        "title": "Open-Source Activity Snapshot",
-        "description": f"{snapshot}\n\nPortfolio active: {portfolio}",
+        "title": "Engineering Activity Snapshot",
         "color": color,
         "fields": fields,
-        "footer": {"text": f"duck-diff \u00b7 OSS Activity Tracker \u00b7 {_utcnow().strftime('%Y-%m-%d %H:%M')} UTC"},
+        "footer": {"text": f"oss_tracker.py \u00b7 {_utcnow().strftime('%Y-%m-%d %H:%M')} UTC"},
     }
-    return {"username": "OSS Activity Tracker", "embeds": [embed]}
+    return {"username": "Telemetry", "embeds": [embed]}
 
 
 # ---------------------------------------------------------------------------
@@ -584,13 +596,13 @@ def build_payload(report):
 def print_report(report):
     sep = "=" * 60
     print("\n" + sep)
-    print("OSS ACTIVITY SNAPSHOT")
+    print("ENGINEERING ACTIVITY SNAPSHOT")
     print(sep)
 
     def dump(label, lines, multiline=False):
         print(f"\n[{label}]")
         if not lines:
-            print("  (none)")
+            print("  --")
             return
         for ln in lines:
             parts = ln.splitlines()
@@ -598,18 +610,18 @@ def print_report(report):
             for extra in parts[1:]:
                 print(f"    {extra}" if multiline else f"    {extra.splitlines()[0]}")
 
-    dump("\U0001F534 Repositories Needing Attention", report["attention"], multiline=True)
-    dump("\U0001F7E2 Clean Repositories", report["clean"], multiline=True)
+    dump("Flagged Repos", report["attention"], multiline=True)
+    dump("Clean Repos", report["clean"], multiline=True)
     dump("Active Reviews", report["active"])
     dump("Merged PRs (7d)", report["merged"])
     dump("Other Open Items", report["open_items"])
     if report["notes"]:
-        dump("Tracker Notes", report["notes"])
+        dump("Notes", report["notes"])
 
     c = report["counts"]
-    print(f"\nCounts: open={c['open']} merged={c['merged']} attention={c['attention']} "
-          f"clean={c['clean']} reviews={c['reviews']} issues={c['issues']} "
-          f"portfolio={c['portfolio'] or 'none'}")
+    print(f"\nCounts: commits={c['commits']} prs_touched={c['prs_touched']} open={c['open']} "
+          f"merged={c['merged']} attention={c['attention']} clean={c['clean']} "
+          f"reviews={c['reviews']} issues={c['issues']} portfolio={c['portfolio'] or 'none'}")
     print(sep)
 
 
@@ -634,10 +646,10 @@ def dispatch(payload):
 
 def dispatch_error(message):
     payload = {
-        "username": "OSS Activity Tracker",
+        "username": "Telemetry",
         "embeds": [{
-            "title": "OSS Tracker Error",
-            "description": message,
+            "title": "Engineering Activity Snapshot",
+            "description": f"collector error: {message}",
             "color": RED,
         }],
     }
