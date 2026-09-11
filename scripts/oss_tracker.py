@@ -4,14 +4,18 @@ Fault-tolerant open source activity tracker for Ahmad Bilal's portfolio.
 
 Sweeps the GitHub search and REST APIs for pull requests, issue updates, and
 review requests authored by or assigned to AhmadBilalDSA (excluding beginner
-repos), assesses review/CI/merge state, and posts a clean status card to a
-Discord webhook. Every API call is guarded by try/except and falls back to
-partial reports when rate limits or transient errors hit - the scheduled
-workflow never crashes on API trouble.
+repos), inspects every open portfolio PR for CI, merge-conflict, and
+maintainer-review state, extracts the actual text snippet of the latest
+maintainer ask when a response or change is requested, and posts a Discord
+card that explicitly separates clean repositories from repositories needing
+attention with the exact flag reason. Every API call is guarded by try/except
+and falls back to partial reports when rate limits or transient errors hit -
+the scheduled workflow never crashes on API trouble.
 """
 
 import json
 import os
+import re
 import sys
 import requests
 from datetime import datetime, timedelta, timezone
@@ -58,6 +62,21 @@ AMBER = 0xF59E0B
 RED = 0xEF4444
 
 FAILING_CONCLUSIONS = {"failure", "timed_out", "action_required", "cancelled"}
+
+# Human-readable flag reasons shown on the card, ordered by severity.
+FLAG_MERGE_CONFLICT = "Merge Conflict"
+FLAG_CI_FAILING = "CI Failing"
+FLAG_CI_PENDING = "CI Pending"
+FLAG_CHANGE_REQUEST = "Maintainer Change Request"
+FLAG_MAINTAINER_FEEDBACK = "Maintainer Feedback"
+FLAG_ORDER = [
+    FLAG_MERGE_CONFLICT,
+    FLAG_CI_FAILING,
+    FLAG_CHANGE_REQUEST,
+    FLAG_CI_PENDING,
+    FLAG_MAINTAINER_FEEDBACK,
+]
+SNIPPET_CHAR_LIMIT = 220
 
 
 class _GitHubRateLimit(Exception):
@@ -157,6 +176,8 @@ def _fetch_open_prs():
             "ci": None,
             "flags": [],
             "pending_review": False,
+            "maintainer_review": False,
+            "feedback_snippet": "",
             "audit_failed": False,
         })
     return out
@@ -177,6 +198,72 @@ def _ci_state(repo, sha):
     return "success"
 
 
+def _clean_snippet(text, limit=SNIPPET_CHAR_LIMIT):
+    """Flatten a multiline comment/body into one trimmed ellipsized sentence."""
+    if not text:
+        return ""
+    lines = [ln.strip() for ln in str(text).splitlines() if ln.strip()]
+    flat = re.sub(r"\s+", " ", " ".join(lines)).strip()
+    if len(flat) <= limit:
+        return flat
+    return flat[: limit - 1].rstrip() + "\u2026"
+
+
+def _other_author(node):
+    author = ((node or {}).get("user") or {}).get("login") or ""
+    return bool(author) and author.lower() != GITHUB_USERNAME.lower()
+
+
+def _ordered_flags(flags):
+    return sorted(
+        {flag for flag in flags},
+        key=lambda flag: FLAG_ORDER.index(flag) if flag in FLAG_ORDER else len(FLAG_ORDER),
+    )
+
+
+def _maintainer_feedback(repo, number):
+    """Return (flag_reason, snippet) of the latest maintainer ask, else (None, "").
+
+    Prefers a CHANGES_REQUESTED review, then the newest review comment or issue
+    comment left by someone other than the tracker's own user.
+    """
+    reviews = _gh_get(f"{API_BASE}/repos/{repo}/pulls/{number}/reviews") or []
+    for review in reversed(reviews):
+        if (review.get("state") or "").upper() != "CHANGES_REQUESTED":
+            continue
+        body = _clean_snippet(review.get("body") or "")
+        if body:
+            return FLAG_CHANGE_REQUEST, body
+        break
+
+    change_requested = any(
+        (review.get("state") or "").upper() == "CHANGES_REQUESTED" for review in reviews
+    )
+
+    comments = _gh_get(f"{API_BASE}/repos/{repo}/pulls/{number}/comments") or []
+    for comment in reversed(comments):
+        if not _other_author(comment):
+            continue
+        body = _clean_snippet(comment.get("body") or "")
+        if body:
+            label = FLAG_CHANGE_REQUEST if change_requested else FLAG_MAINTAINER_FEEDBACK
+            return label, body
+        break
+
+    comments = _gh_get(f"{API_BASE}/repos/{repo}/issues/{number}/comments") or []
+    for comment in reversed(comments):
+        if not _other_author(comment):
+            continue
+        body = _clean_snippet(comment.get("body") or "")
+        if body:
+            return FLAG_MAINTAINER_FEEDBACK, body
+        break
+
+    if change_requested:
+        return FLAG_CHANGE_REQUEST, "(reviewer requested changes; no comment body to quote)"
+    return None, ""
+
+
 def _audit_open_pr(entry):
     repo, number = entry["repo"], entry["number"]
     try:
@@ -185,26 +272,27 @@ def _audit_open_pr(entry):
             entry["audit_failed"] = True
             return entry
         if detail.get("mergeable") is False or detail.get("mergeable_state") == "dirty":
-            entry["flags"].append("merge conflict")
+            entry["flags"].append(FLAG_MERGE_CONFLICT)
         sha = (detail.get("head") or {}).get("sha")
         if sha:
             state = _ci_state(repo, sha)
             entry["ci"] = state
             if state == "failure":
-                entry["flags"].append("CI failing")
+                entry["flags"].append(FLAG_CI_FAILING)
             elif state == "pending":
-                entry["flags"].append("CI pending")
-        comments = _gh_get(f"{API_BASE}/repos/{repo}/pulls/{number}/comments")
-        if comments:
-            last_author = (comments[-1].get("user") or {}).get("login")
-            if last_author and last_author.lower() != GITHUB_USERNAME.lower():
-                entry["pending_review"] = True
-                entry["flags"].append("maintainer comment awaiting reply")
+                entry["flags"].append(FLAG_CI_PENDING)
+        label, snippet = _maintainer_feedback(repo, number)
+        if label:
+            entry["maintainer_review"] = True
+            entry["pending_review"] = True
+            entry["flags"].append(label)
+            entry["feedback_snippet"] = snippet
     except _GitHubRateLimit:
         entry["audit_failed"] = True
     except Exception as exc:
         entry["audit_failed"] = True
         print(f"[audit] repo={repo} pr={number} error: {exc}")
+    entry["flags"] = _ordered_flags(entry["flags"])
     return entry
 
 
@@ -344,28 +432,66 @@ def _field_value(lines, fallback):
     return text[:FIELD_CHAR_LIMIT]
 
 
+def _attention_line(entry):
+    label = _repo_label(entry["repo"])
+    title = (entry.get("title") or "Untitled")[:100]
+    flags = ", ".join(_ordered_flags(entry["flags"]))
+    lines = [f"**{label}** \u00b7 PR#{entry['number']} \u2014 {title}", f"\u26a0\ufe0f {flags}"]
+    snippet = entry.get("feedback_snippet") or ""
+    if snippet:
+        lines.append(f"> \u201c{snippet}\u201d")
+    url = entry.get("html_url") or ""
+    lines.append(f"[Open PR]({url})")
+    return "\n".join(lines)
+
+
+def _clean_line(repo, prs):
+    label = _repo_label(repo)
+    if not prs:
+        return f"**{label}** \u2014 no open PRs"
+    links = " \u00b7 ".join(f"[PR#{p['number']}]({p['html_url']})" for p in prs)
+    return f"**{label}** \u2014 checks green ({len(prs)} open)\n{links}"
+
+
 def build_report(data):
     active = []
     for rr in data["review_requests"]:
         active.append(_entry(f"[{_repo_label(rr['repo'])}] PR#{rr['number']} (review requested)", rr))
     for pr in data["open_prs"]:
-        if "maintainer comment awaiting reply" in pr["flags"]:
-            active.append(_entry(f"[{_repo_label(pr['repo'])}] PR#{pr['number']}", pr, "reply pending"))
+        if pr["repo"] not in PORTFOLIO_REPOS and pr.get("maintainer_review"):
+            active.append(
+                _entry(f"[{_repo_label(pr['repo'])}] PR#{pr['number']}", pr, "reply pending")
+            )
 
     merged = [
         _entry(f"[{_repo_label(m['repo'])}] PR#{m['number']}", m, _short_date(m["merged_at"]))
         for m in data["merged_prs"]
     ]
 
+    portfolio_prs = [pr for pr in data["open_prs"] if pr["repo"] in PORTFOLIO_REPOS]
+    attention = [_attention_line(pr) for pr in portfolio_prs if pr["flags"]]
+
+    flagged_repos = {pr["repo"] for pr in portfolio_prs if pr["flags"]}
+    clean_repos = [repo for repo in PORTFOLIO_REPOS if repo not in flagged_repos]
+    clean_prs_by_repo = {}
+    for pr in portfolio_prs:
+        if not pr["flags"]:
+            clean_prs_by_repo.setdefault(pr["repo"], []).append(pr)
+    clean = [_clean_line(repo, clean_prs_by_repo.get(repo, [])) for repo in clean_repos]
+
     open_items = []
     for pr in data["open_prs"]:
+        if pr["repo"] in PORTFOLIO_REPOS:
+            continue
         for flag in pr["flags"]:
-            if flag == "maintainer comment awaiting reply":
-                continue
             open_items.append(_entry(f"[{_repo_label(pr['repo'])}] PR#{pr['number']}", pr, flag))
     for issue in data["open_issues"]:
         open_items.append(
-            _entry(f"[{_repo_label(issue['repo'])}] Issue#{issue['number']}", issue, f"updated {_short_date(issue['updated_at'])}")
+            _entry(
+                f"[{_repo_label(issue['repo'])}] Issue#{issue['number']}",
+                issue,
+                f"updated {_short_date(issue['updated_at'])}",
+            )
         )
 
     portfolio_hit = {m["repo"] for m in data["merged_prs"]} | {p["repo"] for p in data["open_prs"]}
@@ -375,13 +501,17 @@ def build_report(data):
         "active": active,
         "merged": merged,
         "open_items": open_items,
+        "attention": attention,
+        "clean": clean,
         "notes": data["notes"],
         "counts": {
             "open": len(data["open_prs"]),
             "merged": len(data["merged_prs"]),
-            "flags": len(open_items),
+            "flags": len(attention),
             "reviews": len(data["review_requests"]),
             "issues": len(data["open_issues"]),
+            "attention": len(attention),
+            "clean": len(clean),
             "portfolio": portfolio_seen,
         },
     }
@@ -391,12 +521,14 @@ def build_payload(report):
     counts = report["counts"]
     snapshot = (
         f"**Snapshot:** {counts['open']} open PRs \u00b7 {counts['merged']} merged (7d) \u00b7 "
-        f"{counts['flags']} flags \u00b7 {counts['reviews']} review requests \u00b7 "
+        f"{counts['attention']} flagged \u00b7 {counts['reviews']} review requests \u00b7 "
         f"{counts['issues']} issues touched"
     )
     portfolio = ", ".join(_repo_label(r) for r in counts["portfolio"]) or "none this cycle"
 
-    if report["notes"] or counts["flags"]:
+    if counts["attention"]:
+        color = RED
+    elif report["notes"] or report["open_items"]:
         color = AMBER
     elif counts["open"] or counts["reviews"]:
         color = CYAN
@@ -404,9 +536,34 @@ def build_payload(report):
         color = EMERALD
 
     fields = [
-        {"name": "Active Reviews", "value": _field_value(report["active"], "No pending review discussions."), "inline": False},
-        {"name": "Merged PRs (7d)", "value": _field_value(report["merged"], "No recent merges in the window."), "inline": False},
-        {"name": "Open Items", "value": _field_value(report["open_items"], "All checks green, no conflicts, no stale issues."), "inline": False},
+        {
+            "name": "\U0001F534 Repositories Needing Attention",
+            "value": _field_value(
+                report["attention"],
+                "No repos need attention \u2014 all portfolio checks are green.",
+            ),
+            "inline": False,
+        },
+        {
+            "name": "\U0001F7E2 Clean Repositories",
+            "value": _field_value(report["clean"], "None this cycle."),
+            "inline": False,
+        },
+        {
+            "name": "Active Reviews",
+            "value": _field_value(report["active"], "No pending review discussions."),
+            "inline": False,
+        },
+        {
+            "name": "Merged PRs (7d)",
+            "value": _field_value(report["merged"], "No recent merges in the window."),
+            "inline": False,
+        },
+        {
+            "name": "Other Open Items",
+            "value": _field_value(report["open_items"], "No stray open items outside the portfolio."),
+            "inline": False,
+        },
     ]
     if report["notes"]:
         fields.append({"name": "Tracker Notes", "value": _field_value([f"- {n}" for n in report["notes"]], "-"), "inline": False})
@@ -415,6 +572,7 @@ def build_payload(report):
         "title": "Open-Source Activity Snapshot",
         "description": f"{snapshot}\n\nPortfolio active: {portfolio}",
         "color": color,
+        "fields": fields,
         "footer": {"text": f"duck-diff \u00b7 OSS Activity Tracker \u00b7 {_utcnow().strftime('%Y-%m-%d %H:%M')} UTC"},
     }
     return {"username": "OSS Activity Tracker", "embeds": [embed]}
@@ -429,22 +587,29 @@ def print_report(report):
     print("OSS ACTIVITY SNAPSHOT")
     print(sep)
 
-    def dump(label, lines):
+    def dump(label, lines, multiline=False):
         print(f"\n[{label}]")
         if not lines:
             print("  (none)")
+            return
         for ln in lines:
-            print(f"  - {ln.splitlines()[0]}")
+            parts = ln.splitlines()
+            print(f"  - {parts[0]}")
+            for extra in parts[1:]:
+                print(f"    {extra}" if multiline else f"    {extra.splitlines()[0]}")
 
+    dump("\U0001F534 Repositories Needing Attention", report["attention"], multiline=True)
+    dump("\U0001F7E2 Clean Repositories", report["clean"], multiline=True)
     dump("Active Reviews", report["active"])
     dump("Merged PRs (7d)", report["merged"])
-    dump("Open Items", report["open_items"])
+    dump("Other Open Items", report["open_items"])
     if report["notes"]:
         dump("Tracker Notes", report["notes"])
 
     c = report["counts"]
-    print(f"\nCounts: open={c['open']} merged={c['merged']} flags={c['flags']} "
-          f"reviews={c['reviews']} issues={c['issues']} portfolio={c['portfolio'] or 'none'}")
+    print(f"\nCounts: open={c['open']} merged={c['merged']} attention={c['attention']} "
+          f"clean={c['clean']} reviews={c['reviews']} issues={c['issues']} "
+          f"portfolio={c['portfolio'] or 'none'}")
     print(sep)
 
 
@@ -484,6 +649,13 @@ def dispatch_error(message):
 # Orchestration
 # ---------------------------------------------------------------------------
 def main():
+    # The card uses emoji and curly quotes; keep console logs safe on
+    # single-byte terminals (e.g. Windows cp1252) as well as UTF-8 runners.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
     print(f"[oss-tracker] token={'configured' if GH_TOKEN else 'none'} "
           f"webhook={'configured' if DISCORD_WEBHOOK_URL else 'none'}")
 
