@@ -589,7 +589,7 @@ def upload_image_to_linkedin(banner_path):
 
 
 def build_post_payload(body, image_urn=None):
-    """Single-object media schema: content.media is a list with one {id} entry."""
+    """Single-object media schema: content.media is a dict with an 'id' key."""
     payload = {
         "author": LINKEDIN_PERSON_URN,
         "commentary": body,
@@ -602,7 +602,7 @@ def build_post_payload(body, image_urn=None):
         "lifecycleState": "PUBLISHED",
     }
     if image_urn:
-        payload["content"] = {"media": [{"id": image_urn}]}
+        payload["content"] = {"media": {"id": image_urn}}
     return payload
 
 
@@ -710,9 +710,9 @@ def _test_banner_render():
 def _test_media_schema():
     payload = build_post_payload("Some commentary", image_urn="urn:li:image:CxT-TEST")
     media = payload.get("content", {}).get("media")
-    ok = media == [{"id": "urn:li:image:CxT-TEST"}]
+    ok = media == {"id": "urn:li:image:CxT-TEST"}
     if not ok:
-        print(f"    FAIL: content.media = {media!r}, expected [{{'id': image_urn}}]")
+        print(f"    FAIL: content.media = {media!r}, expected {{'id': image_urn}}")
     return ok
 
 
