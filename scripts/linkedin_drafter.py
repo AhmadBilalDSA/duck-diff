@@ -9,13 +9,23 @@ AI_API_KEY = os.getenv("AI_API_KEY")
 AI_BASE_URL = os.getenv("AI_BASE_URL", "https://openrouter.ai/api/v1")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 
-# List of active free models on OpenRouter (tried in order)
-FREE_MODELS = [
-    "google/gemini-2.0-flash-lite-preview-02-05:free",
-    "meta-llama/llama-3.2-3b-instruct:free",
-    "mistralai/mistral-7b-instruct:free",
-    "qwen/qwen-2.5-72b-instruct:free"
-]
+def get_live_free_models():
+    """Dynamically fetch all currently active free models from OpenRouter."""
+    try:
+        resp = requests.get(f"{AI_BASE_URL}/models")
+        if resp.status_code == 200:
+            models_data = resp.json().get("data", [])
+            free_models = [
+                m["id"] for m in models_data 
+                if m.get("id", "").endswith(":free") or 
+                (m.get("pricing", {}).get("prompt") == "0" and m.get("pricing", {}).get("completion") == "0")
+            ]
+            print(f"Discovered {len(free_models)} live free models on OpenRouter.")
+            return free_models
+    except Exception as e:
+        print(f"Error fetching model directory: {e}")
+    # Fallbacks if directory query fails
+    return ["deepseek/deepseek-r1:free", "deepseek/deepseek-chat:free", "google/gemini-flash-1.5:free"]
 
 def get_recent_merged_prs():
     url = f"https://api.github.com/search/issues?q=author:{GITHUB_USERNAME}+is:pr+is:merged"
@@ -44,8 +54,8 @@ def generate_draft(pr):
         return None
 
     system_prompt = (
-        "You are an Analytics Engineering content strategist following 2026 conversion patterns. "
-        "Rules: first-person, number-first hook, no corporate cliches, safe triple density with metrics, "
+        "You are an Analytics Engineering content strategist following conversion patterns. "
+        "Rules: first-person, number-first hook, zero corporate cliches, triple density with metrics, "
         "and an anchored systems question. Return [POST BODY] followed by [FIRST COMMENT]."
     )
     user_prompt = f"Draft post for PR:\nRepo: {pr['repository_url']}\nTitle: {pr['title']}\nURL: {pr['html_url']}\nDetails: {pr['body']}"
@@ -56,7 +66,9 @@ def generate_draft(pr):
         "X-Title": "LinkedIn Drafter"
     }
 
-    for model in FREE_MODELS:
+    models_to_try = get_live_free_models()
+
+    for model in models_to_try[:5]:  # Try the top 5 live free models
         print(f"Attempting draft generation with model: {model}...")
         payload = {
             "model": model,
