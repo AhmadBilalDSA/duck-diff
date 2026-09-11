@@ -15,7 +15,12 @@ GH_PAT = os.getenv("GH_PAT", os.getenv("GITHUB_TOKEN", ""))
 AI_API_KEY = os.getenv("AI_API_KEY", "")
 AI_BASE_URL = os.getenv("AI_BASE_URL", "https://openrouter.ai/api/v1")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
-AUTO_PUBLISH = os.getenv("AUTO_PUBLISH", "").strip().lower()
+# AUTO_PUBLISH defaults to 'true' unless explicitly set to 'false'
+_auto_publish_raw = os.getenv("AUTO_PUBLISH", "").strip().lower()
+AUTO_PUBLISH = "false" if _auto_publish_raw == "false" else "true"
+
+# Content audit guardrails
+BANNED_CLICHES = ["thrilled", "excited to share", "humbled", "delighted to announce"]
 
 # Sanitize LinkedIn credentials: strip extra quotes, surrounding quotes, \r/\n and spaces
 def sanitize_secret(value):
@@ -171,6 +176,37 @@ def parse_post(text, pr):
 
 
 # ---------------------------------------------------------------------------
+# Step 3b: Automated content audit engine
+# ---------------------------------------------------------------------------
+def run_automated_audit(body, comment):
+    reasons = []
+    body_len = len(body or "")
+    if not (120 <= body_len <= 2800):
+        reasons.append(
+            f"Body length {body_len} chars is outside the 120-2800 character range."
+        )
+    lower_body = (body or "").lower()
+    cliches_found = [c for c in BANNED_CLICHES if c in lower_body]
+    if cliches_found:
+        reasons.append(
+            f"Banned corporate clichés detected: {', '.join(cliches_found)}."
+        )
+    hook = (body or "").strip().splitlines()[0].strip() if (body or "").strip() else ""
+    if not re.search(r"\d+", hook):
+        reasons.append(
+            "Hook (first sentence) contains no concrete number or metric (regex r'\\d+')."
+        )
+    passed = len(reasons) == 0
+    if passed:
+        print(f"[audit] PASS — body {body_len} chars, numeric hook, no corporate clichés.")
+    else:
+        print(f"[audit] FAIL — {len(reasons)} issue(s):")
+        for reason in reasons:
+            print(f"  - {reason}")
+    return passed, reasons
+
+
+# ---------------------------------------------------------------------------
 # Step 4: Banner generation with matplotlib
 # ---------------------------------------------------------------------------
 def generate_banner(pr):
@@ -226,6 +262,48 @@ def dispatch_discord(body, comment, banner_path):
         print(f"[discord] error: {e}")
 
 
+def dispatch_discord_warning(reasons, body, comment):
+    if not DISCORD_WEBHOOK_URL:
+        print("[discord] no webhook URL configured; audit failure not dispatched.")
+        return
+    print("[discord] dispatching audit-failure warning to webhook...")
+    try:
+        message = (
+            f"**AUDIT FAILED - post NOT published to LinkedIn.**\n\n"
+            f"Failure reasons:\n" + "\n".join(f"- {r}" for r in reasons) +
+            f"\n\n**Draft:**\n{body[:1500]}\n\n```{comment[:300]}```"
+        )
+        resp = requests.post(DISCORD_WEBHOOK_URL, json={"content": message}, timeout=60)
+        if resp.status_code in (200, 204):
+            print("[discord] audit-failure warning delivered.")
+        else:
+            print(f"[discord] warning webhook failed ({resp.status_code}): {resp.text[:300]}")
+    except Exception as e:
+        print(f"[discord] error sending warning: {e}")
+
+
+def dispatch_discord_success(post_urn, banner_path):
+    if not DISCORD_WEBHOOK_URL:
+        print("[discord] no webhook URL configured; success not dispatched.")
+        return
+    print("[discord] dispatching publish confirmation to webhook...")
+    try:
+        message = (
+            f"**Publish confirmed - live on LinkedIn.**\n\n"
+            f"Post URN: `{post_urn}`\n"
+            f"Preview: https://www.linkedin.com/feed/update/{post_urn}"
+        )
+        with open(banner_path, "rb") as f:
+            files = {"file": ("banner.png", f, "image/png")}
+            resp = requests.post(DISCORD_WEBHOOK_URL, data={"content": message}, files=files, timeout=60)
+        if resp.status_code in (200, 204):
+            print("[discord] success confirmation delivered.")
+        else:
+            print(f"[discord] success webhook failed ({resp.status_code}): {resp.text[:300]}")
+    except Exception as e:
+        print(f"[discord] error sending success: {e}")
+
+
 # ---------------------------------------------------------------------------
 # Step 6: LinkedIn publishing
 # ---------------------------------------------------------------------------
@@ -268,7 +346,7 @@ def upload_image_to_linkedin(banner_path):
 
 def publish_linkedin(body, comment, banner_path):
     if not validate_linkedin():
-        return
+        return None
     media = []
     image_urn = upload_image_to_linkedin(banner_path)
     if image_urn:
@@ -296,11 +374,12 @@ def publish_linkedin(body, comment, banner_path):
     resp = requests.post("https://api.linkedin.com/rest/posts", headers=LINKEDIN_HEADERS, json=payload, timeout=60)
     if resp.status_code != 201:
         print(f"[linkedin] post failed ({resp.status_code}): {resp.text[:500]}")
-        return
+        return None
     post_urn = resp.headers.get("x-restli-id")
     print(f"[linkedin] post published: {post_urn}")
     if post_urn and comment:
         place_first_comment(post_urn, comment)
+    return post_urn
 
 
 def place_first_comment(post_urn, comment):
@@ -318,6 +397,8 @@ def place_first_comment(post_urn, comment):
 # Orchestration
 # ---------------------------------------------------------------------------
 def main():
+    print(f"[pipeline] AUTO_PUBLISH={AUTO_PUBLISH}")
+
     pr = get_pr()
     print(f"[pipeline] PR: {pr['title']} -> {pr['html_url']}")
 
@@ -330,14 +411,30 @@ def main():
     print("[POST BODY]\n" + body + "\n\n[FIRST COMMENT]\n" + comment)
     print("\n==================================================================\n")
 
+    passed, reasons = run_automated_audit(body, comment)
+    if not passed:
+        print("[pipeline] Audit FAILED. Aborting LinkedIn publishing cleanly.")
+        dispatch_discord_warning(reasons, body, comment)
+        sys.exit(0)
+
+    print("[pipeline] Audit PASSED. Proceeding to banner + publishing stage.")
     banner_path = generate_banner(pr)
-    dispatch_discord(body, comment, banner_path)
 
     if AUTO_PUBLISH == "true":
         print("[pipeline] AUTO_PUBLISH=true; publishing to LinkedIn...")
-        publish_linkedin(body, comment, banner_path)
+        post_urn = publish_linkedin(body, comment, banner_path)
+        if post_urn:
+            print(f"[pipeline] Publish complete: {post_urn}")
+            dispatch_discord_success(post_urn, banner_path)
+        else:
+            print("[pipeline] Publish FAILED; dispatching warning.")
+            dispatch_discord_warning(
+                ["LinkedIn publish call failed (see logs above)."], body, comment
+            )
+            sys.exit(1)
     else:
-        print("[pipeline] AUTO_PUBLISH not set to 'true'; skipping LinkedIn publish.")
+        print("[pipeline] AUTO_PUBLISH not enabled; dispatching draft to Discord.")
+        dispatch_discord(body, comment, banner_path)
 
 
 if __name__ == "__main__":

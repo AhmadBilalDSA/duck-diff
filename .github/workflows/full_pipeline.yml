@@ -9,7 +9,7 @@ on:
         description: 'Auto-publish the generated post to LinkedIn'
         required: true
         type: boolean
-        default: false
+        default: true
 
 jobs:
   full_pipeline:
@@ -27,5 +27,5 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           LINKEDIN_ACCESS_TOKEN: ${{ secrets.LINKEDIN_ACCESS_TOKEN }}
           LINKEDIN_PERSON_URN: ${{ secrets.LINKEDIN_PERSON_URN }}
-          AUTO_PUBLISH: ${{ inputs.auto_publish && 'true' || 'false' }}
+          AUTO_PUBLISH: ${{ inputs.auto_publish }}
         run: python scripts/full_pipeline.py
