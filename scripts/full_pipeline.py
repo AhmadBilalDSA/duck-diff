@@ -347,15 +347,13 @@ def upload_image_to_linkedin(banner_path):
 def publish_linkedin(body, comment, banner_path):
     if not validate_linkedin():
         return None
-    media = []
+    media = None
     image_urn = upload_image_to_linkedin(banner_path)
     if image_urn:
-        media.append({
+        media = {
             "id": image_urn,
-            "status": "READY",
-            "title": f"{REPO_NAME} PR announcement",
-            "description": f"Auto-generated banner for {REPO_NAME}",
-        })
+            "altText": f"Auto-generated banner for {REPO_NAME} PR announcement",
+        }
 
     payload = {
         "author": LINKEDIN_PERSON_URN,
