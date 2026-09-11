@@ -122,7 +122,7 @@ def discover_free_models():
 def generate_post(pr):
     if not AI_API_KEY:
         print("ERROR: AI_API_KEY is missing or empty.")
-        return None, None
+        return None
 
     system_prompt = (
         "You are an Analytics Engineering content strategist writing LinkedIn posts "
@@ -131,13 +131,15 @@ def generate_post(pr):
         "2. Exactly 3 technical density points: dense, metrics-driven, zero corporate cliches.\n"
         "3. Anchored open question at the end tied to the post subject.\n"
         "4. First-person voice, no emojis, no hashtags.\n"
-        "Return ONLY two sections separated by blank lines:\n"
-        "[POST BODY]\n<post text>\n\n[FIRST COMMENT]\n<first comment text>"
+        "5. Finish the post with the PR reference on its own clean new line in the "
+        "exact format: PR: <pr_url>\n"
+        "Return ONLY the post body text with no section markers or extra commentary."
     )
     user_prompt = (
-        f"Draft a LinkedIn post for this PR:\n"
-        f"Repo: {pr['repository_url']}\nTitle: {pr['title']}\nURL: {pr['html_url']}\n"
-        f"Details: {pr['body']}"
+        f"Draft a single LinkedIn post for this PR. End the post with the PR link "
+        f"on its own clean new line in the exact format:\n"
+        f"PR: {pr['html_url']}\n\n"
+        f"Repo: {pr['repository_url']}\nTitle: {pr['title']}\nDetails: {pr['body']}"
     )
     headers = {
         "Authorization": f"Bearer {AI_API_KEY}",
@@ -164,15 +166,19 @@ def generate_post(pr):
             print(f"[ai] model {model} failed ({resp.status_code}): {resp.text[:300]}")
         except Exception as e:
             print(f"[ai] model {model} error: {e}")
-    return None, None
+    return None
 
 
 def parse_post(text, pr):
-    body_match = re.search(r"\[POST BODY\]\s*(.*?)(?=\[FIRST COMMENT\]|$)", text, re.S)
-    comment_match = re.search(r"\[FIRST COMMENT\]\s*(.*)", text, re.S)
-    body = (body_match.group(1) if body_match else text).strip()
-    comment = (comment_match.group(1) if comment_match else None) or pr["html_url"].strip()
-    return body, comment
+    text = re.sub(r"\[POST BODY\]\s*", "", text or "", flags=re.I)
+    text = re.sub(r"\[FIRST COMMENT\].*", "", text, flags=re.S | re.I)
+    body = text.strip()
+    pr_line = f"PR: {pr['html_url']}"
+    if pr_line not in body:
+        if body and not body.endswith("\n"):
+            body += "\n"
+        body += f"\n{pr_line}"
+    return body
 
 
 # ---------------------------------------------------------------------------
@@ -344,7 +350,7 @@ def upload_image_to_linkedin(banner_path):
     return image_urn
 
 
-def publish_linkedin(body, comment, banner_path):
+def publish_linkedin(body, banner_path):
     if not validate_linkedin():
         return None
     media = None
@@ -375,20 +381,7 @@ def publish_linkedin(body, comment, banner_path):
         return None
     post_urn = resp.headers.get("x-restli-id")
     print(f"[linkedin] post published: {post_urn}")
-    if post_urn and comment:
-        place_first_comment(post_urn, comment)
     return post_urn
-
-
-def place_first_comment(post_urn, comment):
-    encoded_urn = requests.utils.quote(post_urn)
-    url = f"https://api.linkedin.com/rest/socialActions/{encoded_urn}/comments"
-    payload = {"actor": LINKEDIN_PERSON_URN, "message": {"text": comment}}
-    resp = requests.post(url, headers=LINKEDIN_HEADERS, json=payload, timeout=60)
-    if resp.status_code == 201:
-        print("[linkedin] first comment placed successfully.")
-    else:
-        print(f"[linkedin] comment failed ({resp.status_code}): {resp.text[:400]}")
 
 
 # ---------------------------------------------------------------------------
@@ -400,19 +393,19 @@ def main():
     pr = get_pr()
     print(f"[pipeline] PR: {pr['title']} -> {pr['html_url']}")
 
-    body, comment = generate_post(pr)
+    body = generate_post(pr)
     if not body:
         print("ERROR: draft generation failed across all free models; aborting.")
         sys.exit(1)
 
     print("\n==================== GENERATED LINKEDIN POST ====================\n")
-    print("[POST BODY]\n" + body + "\n\n[FIRST COMMENT]\n" + comment)
+    print(body)
     print("\n==================================================================\n")
 
-    passed, reasons = run_automated_audit(body, comment)
+    passed, reasons = run_automated_audit(body, pr["html_url"])
     if not passed:
         print("[pipeline] Audit FAILED. Aborting LinkedIn publishing cleanly.")
-        dispatch_discord_warning(reasons, body, comment)
+        dispatch_discord_warning(reasons, body, pr["html_url"])
         sys.exit(0)
 
     print("[pipeline] Audit PASSED. Proceeding to banner + publishing stage.")
@@ -420,19 +413,19 @@ def main():
 
     if AUTO_PUBLISH == "true":
         print("[pipeline] AUTO_PUBLISH=true; publishing to LinkedIn...")
-        post_urn = publish_linkedin(body, comment, banner_path)
+        post_urn = publish_linkedin(body, banner_path)
         if post_urn:
             print(f"[pipeline] Publish complete: {post_urn}")
             dispatch_discord_success(post_urn, banner_path)
         else:
             print("[pipeline] Publish FAILED; dispatching warning.")
             dispatch_discord_warning(
-                ["LinkedIn publish call failed (see logs above)."], body, comment
+                ["LinkedIn publish call failed (see logs above)."], body, pr["html_url"]
             )
             sys.exit(1)
     else:
         print("[pipeline] AUTO_PUBLISH not enabled; dispatching draft to Discord.")
-        dispatch_discord(body, comment, banner_path)
+        dispatch_discord(body, pr["html_url"], banner_path)
 
 
 if __name__ == "__main__":
