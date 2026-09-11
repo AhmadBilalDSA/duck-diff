@@ -10,6 +10,11 @@ on:
         required: true
         type: boolean
         default: true
+      run_tests_only:
+        description: 'Run only the integrated self-test suite and exit'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   full_pipeline:
@@ -28,4 +33,5 @@ jobs:
           LINKEDIN_ACCESS_TOKEN: ${{ secrets.LINKEDIN_ACCESS_TOKEN }}
           LINKEDIN_PERSON_URN: ${{ secrets.LINKEDIN_PERSON_URN }}
           AUTO_PUBLISH: ${{ inputs.auto_publish }}
+          RUN_TESTS_ONLY: ${{ inputs.run_tests_only }}
         run: python scripts/full_pipeline.py

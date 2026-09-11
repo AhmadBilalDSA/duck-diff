@@ -1,12 +1,14 @@
+import io
 import os
 import re
+import struct
 import sys
 import requests
-import json
 from datetime import datetime, timedelta, timezone
 
 GITHUB_USERNAME = "AhmadBilalDSA"
 REPO_NAME = "duck-diff"
+REPO_URL = f"https://github.com/{GITHUB_USERNAME}/{REPO_NAME}"
 
 # ---------------------------------------------------------------------------
 # Environment configuration
@@ -21,10 +23,19 @@ AUTO_PUBLISH = "false" if _auto_publish_raw == "false" else "true"
 
 # Content audit guardrails & SEO footer
 BANNED_CLICHES = ["thrilled", "excited to share", "humbled", "delighted"]
-REQUIRED_HASHTAGS = ["#DataEngineering", "#DuckDB", "#AnalyticsEngineering", "#Python"]
+REQUIRED_HASHTAGS = ["#DataEngineering", "#Python", "#SystemsEngineering", "#DatabaseInternals"]
 HASHTAGS_LINE = " ".join(REQUIRED_HASHTAGS)
 MIN_BODY_CHARS, MAX_BODY_CHARS = 500, 2000
-RECENT_PR_DAYS = 14
+RECENT_PR_DAYS = 7
+PR_SEARCH_URL = (
+    f"https://api.github.com/search/issues?q=author:{GITHUB_USERNAME}+is:pr"
+    "&sort=updated&order=desc&per_page=50"
+)
+
+# Beginner / meta repos that add no signal to a technical skills extractor.
+BLACKLISTED_REPOS = {"first-contributions", "firstcontributions", "contribute-to-this-project"}
+BACKLIST_SUBSTRINGS = ("first-contribution", "first contribution")
+
 
 # Sanitize LinkedIn credentials: strip extra quotes, surrounding quotes, \r/\n and spaces
 def sanitize_secret(value):
@@ -51,82 +62,216 @@ BANNER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "banner.p
 
 
 # ---------------------------------------------------------------------------
-# Step 1: GitHub PR discovery (14-day window)
+# Skill taxonomy & multi-repo portfolio catalog
 # ---------------------------------------------------------------------------
-def fetch_recent_merged_pr():
-    url = f"https://api.github.com/search/issues?q=author:{GITHUB_USERNAME}+is:pr+is:merged&per_page=20&sort=updated&order=desc"
+SKILL_TAXONOMY = {
+    "AST Parsing": ["ast", "parser", "parse", "syntax", "grammar", "dialect", "lint", "token"],
+    "Columnar Engines": ["columnar", "arrow", "polar", "parquet", "vectorized", "dataframe", "schema"],
+    "Query Hardening": ["injection", "parameterized", "sanitiz", "escap", "bind", "prepared"],
+    "Distributed SQL": ["distributed", "tidb", "transaction", "raft", "storage engine", "query plan", "planning"],
+    "Type Reflection": ["type", "dtype", "invariant", "reflection", "cast", "typing"],
+    "Data Quality": ["validation", "quality", "assertion", "expectation", "guardrail", "test suite"],
+    "In-Memory Reconciliation": ["reconciliation", "reconcile", "in-memory", "drift", "memory footprint", "diff"],
+    "Agentic Workflows": ["agent", "tool", "semantic", "retrieval", "routing", "workflow"],
+}
+
+# Portfolio catalog used for rotation when no external PR was updated within 7 days.
+# Each entry is a real repo in Ahmad's contribution portfolio.
+PORTFOLIO_CATALOG = [
+    {
+        "repo": "semantica-agi/semantica",
+        "code_url": "https://github.com/semantica-agi/semantica",
+        "title": "Routing agentic retrievals: tool-selection latency vs answer recall",
+        "skills": ["Agentic Workflows", "Semantic Retrieval", "Tool Routing"],
+        "brief": (
+            "Agentic workflows that route semantic retrieval through tool selection. "
+            "Trade-offs between router latency, retrieval precision, and the safety of "
+            "letting a model decide which tool owns a query before context is assembled."
+        ),
+    },
+    {
+        "repo": "sqlfluff/sqlfluff",
+        "code_url": "https://github.com/sqlfluff/sqlfluff",
+        "title": "Parsing SQL dialects: grammar classification, AST nodes, lint throughput",
+        "skills": ["AST Parsing", "Dialect Grammar", "Syntax Analysis"],
+        "brief": (
+            "SQLFluff classifies dialect grammar into AST nodes. Parsing strategy trades "
+            "off backtracking depth against correctness for dialect-specific syntax, and "
+            "the linter converts parse trees into actionable violations under throughput pressure."
+        ),
+    },
+    {
+        "repo": "ibis-project/ibis",
+        "code_url": "https://github.com/ibis-project/ibis",
+        "title": "Reflecting backend schemas into portable columnar type systems",
+        "skills": ["Columnar Engines", "Type Reflection", "Polars Integration"],
+        "brief": (
+            "Ibis reflects backend schemas so one expression graph compiles across engines. "
+            "Columnar type reflection must preserve dtype invariants when pushing "
+            "Polars-backed execution through the same front-end contract."
+        ),
+    },
+    {
+        "repo": "sara-czasak/py-simple-wrap",
+        "code_url": "https://github.com/sara-czasak/py-simple-wrap",
+        "title": "Fighting SQL injection with parameterized wrapping, not string soup",
+        "skills": ["Query Hardening", "Parameterized Execution", "Sanitization"],
+        "brief": (
+            "Parameterized wrapping that keeps user input out of the SQL grammar. "
+            "Sanitization cost, prepared-statement reuse, and the failure modes you "
+            "avoid when identifiers and values are bound instead of interpolated."
+        ),
+    },
+    {
+        "repo": "pingcap/tidb",
+        "code_url": "https://github.com/pingcap/tidb",
+        "title": "Distributed transactions: planner decisions vs storage-engine guarantees",
+        "skills": ["Distributed SQL", "Query Planning", "Storage Engines"],
+        "brief": (
+            "TiDB splits query planning from storage-engine execution. Distributed "
+            "transactions force the planner to reason about region boundaries, commit "
+            "ordering, and the durability guarantees the engine can actually honor."
+        ),
+    },
+    {
+        "repo": "great-expectations/great_expectations",
+        "code_url": "https://github.com/great-expectations/great_expectations",
+        "title": "Data quality as code: validation suites that fail pipelines fast",
+        "skills": ["Data Quality", "Validation Suites", "Data Assertions"],
+        "brief": (
+            "Automated validation suites turn data quality into assertions the pipeline "
+            "must satisfy before downstream consumers touch a row, converting silent "
+            "corruption into a loud, cheap failure at the earliest checkpoint."
+        ),
+    },
+    {
+        "repo": f"{GITHUB_USERNAME}/{REPO_NAME}",
+        "code_url": REPO_URL,
+        "title": "Reconciling datasets in memory under a constant memory footprint",
+        "skills": ["In-Memory Reconciliation", "Data Drift Detection", "Constant Memory"],
+        "brief": (
+            "duck-diff reconciles two datasets entirely in memory while holding the "
+            "footprint constant regardless of input size, then fingerprints drift so "
+            "schema and data changes surface as explicit, testable invariants."
+        ),
+    },
+]
+
+
+def _is_blacklisted(repo_name):
+    lowered = (repo_name or "").lower()
+    if lowered in BLACKLISTED_REPOS:
+        return True
+    return any(sub in lowered for sub in BACKLIST_SUBSTRINGS)
+
+
+def infer_skills(repo_name, title, body):
+    """Map a repo + PR text onto core competencies from the skill taxonomy."""
+    haystack = f"{repo_name} {title} {body}".lower()
+    skills = []
+    for skill, keywords in SKILL_TAXONOMY.items():
+        if any(keyword in haystack for keyword in keywords):
+            skills.append(skill)
+    if not skills:
+        skills = ["Systems Engineering"]
+    return skills
+
+
+def catalog_skills(repo_name):
+    for entry in PORTFOLIO_CATALOG:
+        if entry["repo"].lower() == (repo_name or "").lower():
+            return entry["skills"]
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Step 1: Dynamic GitHub PR discovery (open, review-pending, and merged)
+# ---------------------------------------------------------------------------
+def fetch_latest_merged_pr():
+    """Return the most recently updated PR across Ahmad's portfolio.
+
+    The search index covers open, review-pending, and merged pull requests;
+    the first item updated within the 7-day window (excluding blacklisted
+    beginner/meta repos) wins. Skills are inferred from repo + PR text.
+    """
     headers = {"Authorization": f"token {GH_PAT}", "Accept": "application/vnd.github+json"} if GH_PAT else {}
-    resp = requests.get(url, headers=headers, timeout=30)
+    resp = requests.get(PR_SEARCH_URL, headers=headers, timeout=30)
     if resp.status_code != 200:
         print(f"[github] search failed ({resp.status_code}): {resp.text}")
         return None
     items = resp.json().get("items", [])
     cutoff = datetime.now(timezone.utc) - timedelta(days=RECENT_PR_DAYS)
     for item in items:
-        closed_at = item.get("closed_at")
-        if not closed_at:
+        repo_full = (item.get("repository_url") or "").replace("https://api.github.com/repos/", "")
+        if not repo_full or _is_blacklisted(repo_full):
+            print(f"[github] skipping blacklisted/beginner repo: {repo_full or 'unknown'}")
+            continue
+        updated_at = item.get("updated_at") or item.get("created_at")
+        if not updated_at:
             continue
         try:
-            closed_dt = datetime.fromisoformat(closed_at.replace("Z", "+00:00"))
+            updated_dt = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
         except ValueError:
             continue
-        if closed_dt < cutoff:
+        if updated_dt < cutoff:
             continue
-        repo_full = (item.get("repository_url") or "").replace("https://api.github.com/repos/", "") or REPO_NAME
+        title = item.get("title") or "Untitled pull request"
+        body = (item.get("body") or "")[:800]
         return {
-            "title": item["title"],
-            "html_url": item["html_url"],
-            "body": (item.get("body") or "")[:800],
+            "mode": "PR",
+            "state": _classify_pr(item),
+            "title": title,
+            "body": body or "No PR description provided.",
             "repository_url": repo_full,
+            "html_url": item.get("html_url") or f"https://github.com/{repo_full}/pull/{item.get('number', 0)}",
             "number": item.get("number", 0),
+            "skills": infer_skills(repo_full, title, body),
+            "updated_at": updated_dt.isoformat(),
         }
     return None
 
 
+def _classify_pr(item):
+    pr_meta = item.get("pull_request") or {}
+    if pr_meta.get("merged_at"):
+        return "merged"
+    if (item.get("state") or "").lower() == "open":
+        return "open"
+    return "review_pending"
+
+
 def get_recent_pr():
     try:
-        return fetch_recent_merged_pr()
+        pr = fetch_latest_merged_pr()
+        if pr:
+            print(f"[github] PR selected [{pr['state']}]: {pr['repository_url']} #{pr['number']} ({pr['title']})")
+        return pr
     except Exception as e:
         print(f"[github] error querying API: {e}")
         return None
 
 
 # ---------------------------------------------------------------------------
-# Step 1b: Topic rotation engine (deterministic by UTC weekday)
+# Step 1b: Rotation engine (portfolio catalog, deterministic by UTC weekday)
 # ---------------------------------------------------------------------------
-TOPICS_BY_WEEKDAY = {
-    0: ("Processing & DuckDB performance",
-        "DuckDB in-memory aggregation vs spill-to-disk, vectorized execution throughput, and TPC-H scale performance."),
-    1: ("Defensive data assertions & validation",
-        "Row-count equality checks, schema contracts, and automated guardrails that fail fast in CI."),
-    2: ("Data modeling: star schema vs OBT",
-        "Join fan-out, query latency, and storage trade-offs between normalized star models and one-big-table."),
-    3: ("Upstream open-source contribution patterns",
-        "Contributor onboarding, merge hygiene, and sustainable OSS maintenance workflows."),
-}
-
-
 def get_topic_context(pr):
     if pr:
-        print(f"[topic] recent merged PR prioritized (last {RECENT_PR_DAYS} days).")
-        return {
-            "mode": "PR",
-            "title": pr["title"],
-            "body": pr.get("body") or "No PR description provided.",
-            "repository_url": pr["repository_url"],
-            "html_url": pr["html_url"],
-            "number": pr.get("number", 0),
-        }
+        print(f"[topic] external PR updated within last {RECENT_PR_DAYS} days; using multi-repo skills.")
+        return pr
+
     weekday = datetime.now(timezone.utc).weekday()
-    title, brief = TOPICS_BY_WEEKDAY.get(weekday, TOPICS_BY_WEEKDAY[weekday % 4])
-    print(f"[topic] no recent PR; rotating topic (UTC weekday {weekday}): {title}")
+    entry = PORTFOLIO_CATALOG[weekday % len(PORTFOLIO_CATALOG)]
+    print(f"[topic] no external PR within {RECENT_PR_DAYS} days; rotating portfolio "
+          f"(UTC weekday {weekday}): {entry['repo']}")
     return {
         "mode": "TOPIC",
-        "title": title,
-        "body": brief,
-        "repository_url": REPO_NAME,
-        "html_url": f"https://github.com/{GITHUB_USERNAME}/{REPO_NAME}",
+        "title": entry["title"],
+        "body": entry["brief"],
+        "repository_url": entry["repo"],
+        "html_url": entry["code_url"],
         "number": None,
+        "skills": entry["skills"],
+        "updated_at": None,
     }
 
 
@@ -153,23 +298,24 @@ def discover_free_models():
 
 
 # ---------------------------------------------------------------------------
-# Step 3: AI post drafting
+# Step 3: AI post drafting (skill-tagged, audit-ready)
 # ---------------------------------------------------------------------------
 def generate_post(ctx):
     if not AI_API_KEY:
         print("ERROR: AI_API_KEY is missing or empty.")
         return None
 
+    skills = ", ".join(ctx.get("skills") or [])
     system_prompt = (
-        "You are a senior Analytics Engineer writing high-conversion LinkedIn posts "
+        "You are a senior Systems Engineer writing high-conversion LinkedIn posts "
         "for a technical audience. Follow these rules exactly:\n"
-        "1. Hook: the FIRST line must open with a concrete numeric metric "
-        "(latency ms, memory footprint MB, row count, throughput).\n"
-        "2. Write exactly 3 technical density points covering memory footprints, "
-        "vectorized execution, and schema trade-offs.\n"
-        "3. Thread natural semantic keywords throughout for search discovery "
-        "(DuckDB, data engineering, analytics engineering, columnar, parquet, "
-        "validation, CI/CD).\n"
+        "1. Hook: the FIRST line must open with a concrete numeric metric or a "
+        "system invariant (latency ms, memory footprint MB, row count, throughput, "
+        "commit ordering, byte-level buffers).\n"
+        "2. Write exactly 3 technical density points that weave in the extracted "
+        "engineering skills and their code-safety trade-offs (what you gained vs "
+        "what you defended against).\n"
+        "3. Thread natural semantic keywords throughout for search discovery.\n"
         "4. End with an open systems question to drive comment engagement.\n"
         "5. First-person voice, zero corporate cliches (thrilled, excited to share, "
         "humbled, delighted), no emojis.\n"
@@ -180,12 +326,13 @@ def generate_post(ctx):
         f"Draft ONE LinkedIn post on this topic.\n"
         f"Topic: {ctx['title']}\nTechnical brief: {ctx['body']}\n"
         f"Repository: {ctx['repository_url']}\nReference URL: {ctx['html_url']}\n"
+        f"Extracted skills to feature: {skills}\n"
         f"Target 700-1200 characters for substance and LinkedIn algorithm favor."
     )
     headers = {
         "Authorization": f"Bearer {AI_API_KEY}",
         "Content-Type": "application/json",
-        "HTTP-Referer": f"https://github.com/{GITHUB_USERNAME}/{REPO_NAME}",
+        "HTTP-Referer": REPO_URL,
         "X-Title": f"{REPO_NAME} PR-to-LinkedIn Engine",
     }
 
@@ -229,7 +376,7 @@ def append_footer(body, ctx):
 # ---------------------------------------------------------------------------
 # Step 3b: Automated safety & SEO audit engine
 # ---------------------------------------------------------------------------
-def run_automated_audit(body, reference_url):
+def run_automated_audit(body, reference_url, skills=None):
     reasons = []
     body = body or ""
     body_len = len(body)
@@ -253,6 +400,9 @@ def run_automated_audit(body, reference_url):
         reasons.append(f"Missing required hashtags: {', '.join(missing_hashtags)}.")
     if reference_url and reference_url not in body:
         reasons.append(f"Missing inline reference URL: {reference_url}.")
+    if skills:
+        mentioned = [s for s in skills if s.lower() in lower_body]
+        print(f"[audit] extracted-skills mentioned in body: {mentioned or 'NONE (informational)'}")
     passed = len(reasons) == 0
     if passed:
         print(f"[audit] PASS - body {body_len} chars, numeric hook, cliches 0, SEO footer OK.")
@@ -264,19 +414,20 @@ def run_automated_audit(body, reference_url):
 
 
 # ---------------------------------------------------------------------------
-# Step 4: Banner generation with matplotlib
+# Step 4: Banner generation with matplotlib (headless Agg backend)
 # ---------------------------------------------------------------------------
-def generate_banner(ctx):
+def create_banner_figure(ctx):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    fig, ax = plt.subplots(figsize=(12, 6.75), dpi=120)
+    fig, ax = plt.subplots(figsize=(12, 6.75), dpi=100)
     fig.patch.set_facecolor("#0f172a")
     ax.set_facecolor("#0f172a")
     ax.set_xlim(0, 12)
     ax.set_ylim(0, 6.75)
     ax.axis("off")
+    fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
 
     title = ctx["title"]
     if len(title) > 70:
@@ -290,16 +441,40 @@ def generate_banner(ctx):
     ax.text(0.6, 4.7, badge, color="#94a3b8", fontsize=13, va="center", family="monospace")
     ax.text(0.6, 3.4, title, color="#f8fafc", fontsize=26, va="center",
             family="sans-serif", fontweight="bold", wrap=True)
-    ax.text(0.6, 2.0, "Automated technical storytelling  •  powered by GitHub Actions + duck-diff",
+    ax.text(0.6, 2.0, "Automated technical storytelling  powered by GitHub Actions + duck-diff",
             color="#38bdf8", fontsize=13, va="center", family="monospace")
     ax.plot([0.6, 11.4], [1.35, 1.35], color="#334155", lw=2)
     ax.text(0.6, 0.6, "github.com/" + GITHUB_USERNAME + "/" + REPO_NAME,
             color="#64748b", fontsize=12, va="center", family="monospace")
+    return fig
 
-    fig.savefig(BANNER_PATH, facecolor="#0f172a", bbox_inches="tight", pad_inches=0)
+
+def generate_banner(ctx):
+    import matplotlib.pyplot as plt
+
+    fig = create_banner_figure(ctx)
+    fig.savefig(BANNER_PATH, facecolor="#0f172a")
     plt.close(fig)
     print(f"[banner] generated {BANNER_PATH}")
     return BANNER_PATH
+
+
+def render_banner_buffer(ctx):
+    """Render the 1200x675 banner to an in-memory PNG buffer (headless)."""
+    import matplotlib.pyplot as plt
+
+    fig = create_banner_figure(ctx)
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", facecolor="#0f172a")
+    plt.close(fig)
+    data = buf.getvalue()
+    buf.close()
+    return data
+
+
+def _png_size(data):
+    assert data[:8] == b"\x89PNG\r\n\x1a\n", "not a valid PNG header"
+    return struct.unpack(">II", data[16:24])
 
 
 # ---------------------------------------------------------------------------
@@ -329,7 +504,7 @@ def dispatch_discord(body, banner_path):
 
 def dispatch_discord_warning(reasons, body):
     if not DISCORD_WEBHOOK_URL:
-        print("[discord] no webhook URL configured; audit failure not dispatched.")
+        print("[discord] no webhook URL configured; warning not dispatched.")
         return
     print("[discord] dispatching audit-failure warning to webhook...")
     try:
@@ -347,16 +522,18 @@ def dispatch_discord_warning(reasons, body):
         print(f"[discord] error sending warning: {e}")
 
 
-def dispatch_discord_success(post_urn, banner_path, body):
+def dispatch_discord_success(post_urn, banner_path, body, skills):
     if not DISCORD_WEBHOOK_URL:
         print("[discord] no webhook URL configured; success not dispatched.")
         return
     print("[discord] dispatching publish confirmation to webhook...")
     try:
+        skills_line = ", ".join(skills) if skills else "no explicit skills tagged"
         message = (
             f"**Publish confirmed - live on LinkedIn.**\n\n"
             f"Post URN: `{post_urn}`\n"
             f"Live URL: https://www.linkedin.com/feed/update/{post_urn}\n"
+            f"Extracted skills: {skills_line}\n"
             f"Character count: {len(body)} / {MAX_BODY_CHARS}\n\n"
             f"Banner preview attached."
         )
@@ -372,7 +549,7 @@ def dispatch_discord_success(post_urn, banner_path, body):
 
 
 # ---------------------------------------------------------------------------
-# Step 6: LinkedIn publishing
+# Step 6: LinkedIn publishing (no restricted comments endpoint)
 # ---------------------------------------------------------------------------
 def validate_linkedin():
     if not LINKEDIN_ACCESS_TOKEN or not LINKEDIN_PERSON_URN:
@@ -411,17 +588,8 @@ def upload_image_to_linkedin(banner_path):
     return image_urn
 
 
-def publish_linkedin(body, banner_path):
-    if not validate_linkedin():
-        return None
-    media = None
-    image_urn = upload_image_to_linkedin(banner_path)
-    if image_urn:
-        media = {
-            "id": image_urn,
-            "altText": f"Auto-generated banner for {REPO_NAME} PR announcement",
-        }
-
+def build_post_payload(body, image_urn=None):
+    """Single-object media schema: content.media is a list with one {id} entry."""
     payload = {
         "author": LINKEDIN_PERSON_URN,
         "commentary": body,
@@ -433,8 +601,16 @@ def publish_linkedin(body, banner_path):
         },
         "lifecycleState": "PUBLISHED",
     }
-    if media:
-        payload["content"] = {"media": media}
+    if image_urn:
+        payload["content"] = {"media": [{"id": image_urn}]}
+    return payload
+
+
+def publish_linkedin(body, banner_path):
+    if not validate_linkedin():
+        return None
+    image_urn = upload_image_to_linkedin(banner_path)
+    payload = build_post_payload(body, image_urn=image_urn)
 
     resp = requests.post("https://api.linkedin.com/rest/posts", headers=LINKEDIN_HEADERS, json=payload, timeout=60)
     if resp.status_code != 201:
@@ -446,14 +622,143 @@ def publish_linkedin(body, banner_path):
 
 
 # ---------------------------------------------------------------------------
+# Self-test suite
+# ---------------------------------------------------------------------------
+def _test_sanitize_secret():
+    cases = [
+        ('"raw_token"\r\n', "raw_token"),
+        ("  \t 'token'  ", "token"),
+        ('"token"', "token"),
+        ("urn:li:person:ABC123", "urn:li:person:ABC123"),
+        ('  "urn:li:person:ABC123"  \r\n', "urn:li:person:ABC123"),
+        ("\r\nvalue\r\n", "value"),
+        ("'single'", "single"),
+    ]
+    ok = True
+    for raw, expected in cases:
+        got = sanitize_secret(raw)
+        if got != expected:
+            ok = False
+            print(f"    FAIL: sanitize_secret({raw!r}) -> {got!r}, expected {expected!r}")
+    if sanitize_secret("'urn:li:person:XYZ-420'" ) != "urn:li:person:XYZ-420":
+        ok = False
+        print("    FAIL: urn:li:person: prefix not preserved through sanitization")
+    return ok
+
+
+def _test_audit_engine():
+    url = "https://github.com/AhmadBilalDSA/duck-diff"
+    footer = f"\n\nCode: {url}\n#DataEngineering #Python #SystemsEngineering #DatabaseInternals"
+    compliant = (
+        "41% lower peak memory from an in-memory reconciliation pass that holds the buffer flat.\n\n"
+        "Three density points: constant-memory footprints remove spill-to-disk stalls; "
+        "columnar type reflection preserves dtype invariants across engine boundaries; "
+        "query hardening keeps untrusted input out of the SQL grammar via parameterized wrapping.\n\n"
+        "The trade-off: every byte you keep resident buys latency at the cost of memory ceiling."
+    ) + footer
+    passed, _ = run_automated_audit(compliant, url, skills=["In-Memory Reconciliation"])
+    ok = passed
+
+    no_number = (
+        "Our reconciliation pass flattened the heap footprint for large dataset comparisons.\n\n"
+        "Three density points covering constant-memory footprints, columnar type reflection, "
+        "and query hardening through parameterized wrapping and sanitization trade-offs. "
+        "Every resident byte buys latency at the cost of a higher memory ceiling, so the "
+        "buffer is sized once and never reallocated while batches stream through the engine. "
+        "Schema contracts are asserted at the boundary, drift is fingerprinted per run, and "
+        "injections are neutralized before a single token touches the parser.\n\n"
+        "The open question: where does your memory ceiling sit?"
+    ) + footer
+    rejected_1, _ = run_automated_audit(no_number, url)
+    if rejected_1:
+        ok = False
+        print("    FAIL: audit accepted a post with a non-numeric hook.")
+
+    cliche_body = (
+        "42% less memory pressure from the flat reconciliation buffer.\n\n"
+        "I'm thrilled to share three density points on constant-memory footprints, "
+        "columnar type reflection, and query hardening built on parameterized wrapping. "
+        "The buffer is sized once and never reallocated while batches stream through the "
+        "engine, schema contracts are asserted at the boundary, drift is fingerprinted per "
+        "run, and injections are neutralized before a single token touches the parser. "
+        "Every resident byte buys latency at the cost of a higher memory ceiling, so the "
+        "design favors boundedness over unbounded speed.\n\n"
+        "An open systems question: what granularity do you reconcile at?"
+    ) + footer
+    rejected_2, _ = run_automated_audit(cliche_body, url)
+    if rejected_2:
+        ok = False
+        print("    FAIL: audit accepted a post containing a banned corporate cliche.")
+    return ok
+
+
+def _test_banner_render():
+    ctx = {
+        "mode": "PR",
+        "title": "Test banner: in-memory reconciliation under a constant memory footprint",
+        "repository_url": "AhmadBilalDSA/duck-diff",
+        "number": 42,
+    }
+    data = render_banner_buffer(ctx)
+    width, height = _png_size(data)
+    ok = (width, height) == (1200, 675)
+    if not ok:
+        print(f"    FAIL: banner rendered {width}x{height}, expected 1200x675")
+    return ok, len(data)
+
+
+def _test_media_schema():
+    payload = build_post_payload("Some commentary", image_urn="urn:li:image:CxT-TEST")
+    media = payload.get("content", {}).get("media")
+    ok = media == [{"id": "urn:li:image:CxT-TEST"}]
+    if not ok:
+        print(f"    FAIL: content.media = {media!r}, expected [{{'id': image_urn}}]")
+    return ok
+
+
+def run_pipeline_tests():
+    print("=" * 60)
+    print("RUNNING SELF-TEST SUITE")
+    print("=" * 60)
+    results = [
+        ("Test 1: sanitize_secret strips quotes/whitespace and preserves urn:li:person:", _test_sanitize_secret()),
+        ("Test 2: audit engine gates numeric-hook and banned-cliche failures", _test_audit_engine()),
+        ("Test 3: headless matplotlib banner renders 1200x675 PNG buffer", _test_banner_render()[0]),
+        ("Test 4: post payload uses content.media = [{'id': image_urn}] schema", _test_media_schema()),
+    ]
+    for name, ok in results:
+        print(f"  [{'PASS' if ok else 'FAIL'}] {name}")
+    all_ok = all(ok for _, ok in results)
+    print("RESULT: ALL TESTS PASSED" if all_ok else "RESULT: TESTS FAILED")
+    return all_ok
+
+
+# ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
+def _tests_only_requested():
+    return os.getenv("RUN_TESTS_ONLY", "").strip().lower() == "true" or "--test-only" in sys.argv
+
+
 def main():
     print(f"[pipeline] AUTO_PUBLISH={AUTO_PUBLISH}")
 
+    if _tests_only_requested():
+        sys.exit(0 if run_pipeline_tests() else 1)
+
+    if not run_pipeline_tests():
+        print("[pipeline] SELF-TEST FAILED: aborting before any fetch or publish.")
+        dispatch_discord_warning(
+            ["Self-test suite failed; pipeline aborted before GitHub fetch and LinkedIn publish."],
+            "No draft generated."
+        )
+        sys.exit(1)
+
     pr = get_recent_pr()
     ctx = get_topic_context(pr)
+    skills = ctx.get("skills") or []
     print(f"[pipeline] content: {ctx['mode']} - {ctx['title']} -> {ctx['html_url']}")
+    print(f"[pipeline] skills tagged: {', '.join(skills)}")
 
     body = generate_post(ctx)
     if not body:
@@ -466,7 +771,7 @@ def main():
     print(body)
     print("\n==================================================================\n")
 
-    passed, reasons = run_automated_audit(body, ctx["html_url"])
+    passed, reasons = run_automated_audit(body, ctx["html_url"], skills=skills)
     if not passed:
         print("[pipeline] Audit FAILED. Aborting LinkedIn publishing cleanly.")
         dispatch_discord_warning(reasons, body)
@@ -480,7 +785,7 @@ def main():
         post_urn = publish_linkedin(body, banner_path)
         if post_urn:
             print(f"[pipeline] Publish complete: {post_urn}")
-            dispatch_discord_success(post_urn, banner_path, body)
+            dispatch_discord_success(post_urn, banner_path, body, skills)
         else:
             print("[pipeline] Publish FAILED; dispatching warning.")
             dispatch_discord_warning(
