@@ -1,0 +1,37 @@
+name: Daily Analytics ELT Pipeline
+
+on:
+  schedule:
+    - cron: '30 23 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  daily_analytics:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install requests
+      - name: Ensure data directory exists
+        run: mkdir -p data
+      - name: Run Daily Analytics ELT Pipeline
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python scripts/daily_analytics.py
+      - name: Configure bot identity and commit CSV
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/developer_metrics.csv
+          if git diff --cached --quiet; then
+            echo "No changes to data/developer_metrics.csv; nothing to commit."
+          else
+            git commit -m "data(metrics): append daily ELT activity log"
+            git push origin main
+          fi
