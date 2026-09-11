@@ -1,8 +1,16 @@
 import os
 import requests
 
-LINKEDIN_ACCESS_TOKEN = os.getenv("LINKEDIN_ACCESS_TOKEN")
-LINKEDIN_PERSON_URN = os.getenv("LINKEDIN_PERSON_URN")  # Format: urn:li:person:XXXX
+raw_token = os.getenv("LINKEDIN_ACCESS_TOKEN", "")
+raw_urn = os.getenv("LINKEDIN_PERSON_URN", "")
+
+# Sanitize inputs: remove newlines, carriage returns, leading/trailing whitespace and surrounding quotes
+LINKEDIN_ACCESS_TOKEN = raw_token.strip().strip("'\"").replace("\r", "").replace("\n", "")
+LINKEDIN_PERSON_URN = raw_urn.strip().strip("'\"").replace("\r", "").replace("\n", "")
+
+# Ensure the URN has the correct urn:li:person: prefix
+if LINKEDIN_PERSON_URN and not LINKEDIN_PERSON_URN.startswith("urn:li:person:"):
+    LINKEDIN_PERSON_URN = f"urn:li:person:{LINKEDIN_PERSON_URN}"
 
 API_HEADERS = {
     "Authorization": f"Bearer {LINKEDIN_ACCESS_TOKEN}",
@@ -49,8 +57,14 @@ def publish_comment(post_urn: str, comment_text: str):
         print(f"Comment failed ({resp.status_code}): {resp.text}")
 
 if __name__ == "__main__":
+    if not LINKEDIN_ACCESS_TOKEN or not LINKEDIN_PERSON_URN:
+        print("Error: LINKEDIN_ACCESS_TOKEN or LINKEDIN_PERSON_URN is missing or empty.")
+        exit(1)
+        
+    print(f"Author URN: {LINKEDIN_PERSON_URN}")
     test_text = "Building automated data engines: verifying zero-maintenance technical pipelines via duck-diff and GitHub Actions."
     test_comment = "Repo & pipeline code: https://github.com/AhmadBilalDSA/duck-diff"
+    
     urn = publish_post(test_text)
     if urn:
         publish_comment(urn, test_comment)
