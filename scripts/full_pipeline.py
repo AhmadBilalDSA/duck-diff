@@ -19,8 +19,12 @@ DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 _auto_publish_raw = os.getenv("AUTO_PUBLISH", "").strip().lower()
 AUTO_PUBLISH = "false" if _auto_publish_raw == "false" else "true"
 
-# Content audit guardrails
-BANNED_CLICHES = ["thrilled", "excited to share", "humbled", "delighted to announce"]
+# Content audit guardrails & SEO footer
+BANNED_CLICHES = ["thrilled", "excited to share", "humbled", "delighted"]
+REQUIRED_HASHTAGS = ["#DataEngineering", "#DuckDB", "#AnalyticsEngineering", "#Python"]
+HASHTAGS_LINE = " ".join(REQUIRED_HASHTAGS)
+MIN_BODY_CHARS, MAX_BODY_CHARS = 500, 2000
+RECENT_PR_DAYS = 14
 
 # Sanitize LinkedIn credentials: strip extra quotes, surrounding quotes, \r/\n and spaces
 def sanitize_secret(value):
@@ -47,51 +51,83 @@ BANNER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "banner.p
 
 
 # ---------------------------------------------------------------------------
-# Step 1: GitHub PR discovery
+# Step 1: GitHub PR discovery (14-day window)
 # ---------------------------------------------------------------------------
-def fetch_latest_merged_pr():
-    url = f"https://api.github.com/search/issues?q=author:{GITHUB_USERNAME}+is:pr+is:merged&per_page=5&sort=updated&order=desc"
+def fetch_recent_merged_pr():
+    url = f"https://api.github.com/search/issues?q=author:{GITHUB_USERNAME}+is:pr+is:merged&per_page=20&sort=updated&order=desc"
     headers = {"Authorization": f"token {GH_PAT}", "Accept": "application/vnd.github+json"} if GH_PAT else {}
     resp = requests.get(url, headers=headers, timeout=30)
     if resp.status_code != 200:
         print(f"[github] search failed ({resp.status_code}): {resp.text}")
         return None
     items = resp.json().get("items", [])
-    if not items:
-        return None
-    item = items[0]
-    repo_full = (item.get("repository_url") or "").replace("https://api.github.com/repos/", "") or REPO_NAME
-    pr = {
-        "title": item["title"],
-        "html_url": item["html_url"],
-        "body": (item.get("body") or "")[:800],
-        "repository_url": repo_full,
-        "number": item.get("number", 0),
-        "closed_at": item.get("closed_at", ""),
-    }
-    print(f"[github] fetched latest merged PR #{pr['number']}: {pr['title']}")
-    return pr
+    cutoff = datetime.now(timezone.utc) - timedelta(days=RECENT_PR_DAYS)
+    for item in items:
+        closed_at = item.get("closed_at")
+        if not closed_at:
+            continue
+        try:
+            closed_dt = datetime.fromisoformat(closed_at.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if closed_dt < cutoff:
+            continue
+        repo_full = (item.get("repository_url") or "").replace("https://api.github.com/repos/", "") or REPO_NAME
+        return {
+            "title": item["title"],
+            "html_url": item["html_url"],
+            "body": (item.get("body") or "")[:800],
+            "repository_url": repo_full,
+            "number": item.get("number", 0),
+        }
+    return None
 
 
-def fallback_pr():
-    print("[github] no merged PRs found; using fallback PR template.")
-    return {
-        "title": "Boundary assertions in VectorStore.add_texts",
-        "html_url": "https://github.com/langchain-ai/langchain/pull/40079",
-        "body": "Defensive length check len(ids) == len(texts)",
-        "repository_url": "langchain",
-        "number": 40079,
-        "closed_at": "",
-    }
-
-
-def get_pr():
+def get_recent_pr():
     try:
-        pr = fetch_latest_merged_pr()
+        return fetch_recent_merged_pr()
     except Exception as e:
         print(f"[github] error querying API: {e}")
-        pr = None
-    return pr if pr else fallback_pr()
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Step 1b: Topic rotation engine (deterministic by UTC weekday)
+# ---------------------------------------------------------------------------
+TOPICS_BY_WEEKDAY = {
+    0: ("Processing & DuckDB performance",
+        "DuckDB in-memory aggregation vs spill-to-disk, vectorized execution throughput, and TPC-H scale performance."),
+    1: ("Defensive data assertions & validation",
+        "Row-count equality checks, schema contracts, and automated guardrails that fail fast in CI."),
+    2: ("Data modeling: star schema vs OBT",
+        "Join fan-out, query latency, and storage trade-offs between normalized star models and one-big-table."),
+    3: ("Upstream open-source contribution patterns",
+        "Contributor onboarding, merge hygiene, and sustainable OSS maintenance workflows."),
+}
+
+
+def get_topic_context(pr):
+    if pr:
+        print(f"[topic] recent merged PR prioritized (last {RECENT_PR_DAYS} days).")
+        return {
+            "mode": "PR",
+            "title": pr["title"],
+            "body": pr.get("body") or "No PR description provided.",
+            "repository_url": pr["repository_url"],
+            "html_url": pr["html_url"],
+            "number": pr.get("number", 0),
+        }
+    weekday = datetime.now(timezone.utc).weekday()
+    title, brief = TOPICS_BY_WEEKDAY.get(weekday, TOPICS_BY_WEEKDAY[weekday % 4])
+    print(f"[topic] no recent PR; rotating topic (UTC weekday {weekday}): {title}")
+    return {
+        "mode": "TOPIC",
+        "title": title,
+        "body": brief,
+        "repository_url": REPO_NAME,
+        "html_url": f"https://github.com/{GITHUB_USERNAME}/{REPO_NAME}",
+        "number": None,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -119,27 +155,32 @@ def discover_free_models():
 # ---------------------------------------------------------------------------
 # Step 3: AI post drafting
 # ---------------------------------------------------------------------------
-def generate_post(pr):
+def generate_post(ctx):
     if not AI_API_KEY:
         print("ERROR: AI_API_KEY is missing or empty.")
         return None
 
     system_prompt = (
-        "You are an Analytics Engineering content strategist writing LinkedIn posts "
-        "for a technical founder. Follow these conversion patterns exactly:\n"
-        "1. Number-first hook: open with a concrete number/metric.\n"
-        "2. Exactly 3 technical density points: dense, metrics-driven, zero corporate cliches.\n"
-        "3. Anchored open question at the end tied to the post subject.\n"
-        "4. First-person voice, no emojis, no hashtags.\n"
-        "5. Finish the post with the PR reference on its own clean new line in the "
-        "exact format: PR: <pr_url>\n"
-        "Return ONLY the post body text with no section markers or extra commentary."
+        "You are a senior Analytics Engineer writing high-conversion LinkedIn posts "
+        "for a technical audience. Follow these rules exactly:\n"
+        "1. Hook: the FIRST line must open with a concrete numeric metric "
+        "(latency ms, memory footprint MB, row count, throughput).\n"
+        "2. Write exactly 3 technical density points covering memory footprints, "
+        "vectorized execution, and schema trade-offs.\n"
+        "3. Thread natural semantic keywords throughout for search discovery "
+        "(DuckDB, data engineering, analytics engineering, columnar, parquet, "
+        "validation, CI/CD).\n"
+        "4. End with an open systems question to drive comment engagement.\n"
+        "5. First-person voice, zero corporate cliches (thrilled, excited to share, "
+        "humbled, delighted), no emojis.\n"
+        "Return ONLY the post body text. Do NOT add hashtags or a URL line - "
+        "those are appended automatically. Do not use section markers."
     )
     user_prompt = (
-        f"Draft a single LinkedIn post for this PR. End the post with the PR link "
-        f"on its own clean new line in the exact format:\n"
-        f"PR: {pr['html_url']}\n\n"
-        f"Repo: {pr['repository_url']}\nTitle: {pr['title']}\nDetails: {pr['body']}"
+        f"Draft ONE LinkedIn post on this topic.\n"
+        f"Topic: {ctx['title']}\nTechnical brief: {ctx['body']}\n"
+        f"Repository: {ctx['repository_url']}\nReference URL: {ctx['html_url']}\n"
+        f"Target 700-1200 characters for substance and LinkedIn algorithm favor."
     )
     headers = {
         "Authorization": f"Bearer {AI_API_KEY}",
@@ -162,51 +203,61 @@ def generate_post(pr):
             resp = requests.post(f"{AI_BASE_URL}/chat/completions", headers=headers, json=payload, timeout=90)
             if resp.status_code == 200:
                 text = resp.json()["choices"][0]["message"]["content"]
-                return parse_post(text, pr)
+                return parse_post(text)
             print(f"[ai] model {model} failed ({resp.status_code}): {resp.text[:300]}")
         except Exception as e:
             print(f"[ai] model {model} error: {e}")
     return None
 
 
-def parse_post(text, pr):
+def parse_post(text):
     text = re.sub(r"\[POST BODY\]\s*", "", text or "", flags=re.I)
     text = re.sub(r"\[FIRST COMMENT\].*", "", text, flags=re.S | re.I)
-    body = text.strip()
-    pr_line = f"PR: {pr['html_url']}"
-    if pr_line not in body:
-        if body and not body.endswith("\n"):
-            body += "\n"
-        body += f"\n{pr_line}"
+    return text.strip()
+
+
+def append_footer(body, ctx):
+    body = (body or "").strip()
+    reference_line = f"PR: {ctx['html_url']}" if ctx["mode"] == "PR" else f"Code: {ctx['html_url']}"
+    if reference_line not in body:
+        body += f"\n\n{reference_line}"
+    if HASHTAGS_LINE not in body:
+        body += f"\n{HASHTAGS_LINE}"
     return body
 
 
 # ---------------------------------------------------------------------------
-# Step 3b: Automated content audit engine
+# Step 3b: Automated safety & SEO audit engine
 # ---------------------------------------------------------------------------
-def run_automated_audit(body, comment):
+def run_automated_audit(body, reference_url):
     reasons = []
-    body_len = len(body or "")
-    if not (120 <= body_len <= 2800):
+    body = body or ""
+    body_len = len(body)
+    if not (MIN_BODY_CHARS <= body_len <= MAX_BODY_CHARS):
         reasons.append(
-            f"Body length {body_len} chars is outside the 120-2800 character range."
+            f"Body length {body_len} chars is outside the {MIN_BODY_CHARS}-{MAX_BODY_CHARS} character range."
         )
-    lower_body = (body or "").lower()
+    lower_body = body.lower()
     cliches_found = [c for c in BANNED_CLICHES if c in lower_body]
     if cliches_found:
         reasons.append(
-            f"Banned corporate clichés detected: {', '.join(cliches_found)}."
+            f"Banned corporate cliches detected: {', '.join(cliches_found)}."
         )
-    hook = (body or "").strip().splitlines()[0].strip() if (body or "").strip() else ""
+    hook = body.strip().splitlines()[0].strip() if body.strip() else ""
     if not re.search(r"\d+", hook):
         reasons.append(
             "Hook (first sentence) contains no concrete number or metric (regex r'\\d+')."
         )
+    missing_hashtags = [h for h in REQUIRED_HASHTAGS if h not in body]
+    if missing_hashtags:
+        reasons.append(f"Missing required hashtags: {', '.join(missing_hashtags)}.")
+    if reference_url and reference_url not in body:
+        reasons.append(f"Missing inline reference URL: {reference_url}.")
     passed = len(reasons) == 0
     if passed:
-        print(f"[audit] PASS — body {body_len} chars, numeric hook, no corporate clichés.")
+        print(f"[audit] PASS - body {body_len} chars, numeric hook, cliches 0, SEO footer OK.")
     else:
-        print(f"[audit] FAIL — {len(reasons)} issue(s):")
+        print(f"[audit] FAIL - {len(reasons)} issue(s):")
         for reason in reasons:
             print(f"  - {reason}")
     return passed, reasons
@@ -215,7 +266,7 @@ def run_automated_audit(body, comment):
 # ---------------------------------------------------------------------------
 # Step 4: Banner generation with matplotlib
 # ---------------------------------------------------------------------------
-def generate_banner(pr):
+def generate_banner(ctx):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -227,11 +278,16 @@ def generate_banner(pr):
     ax.set_ylim(0, 6.75)
     ax.axis("off")
 
-    title = pr["title"]
+    title = ctx["title"]
     if len(title) > 70:
         title = title[:67].rsplit(" ", 1)[0] + "..."
-    ax.text(0.6, 4.7, f"PR #{pr.get('number', '')}  //  {pr['repository_url']}",
-            color="#94a3b8", fontsize=13, va="center", family="monospace")
+
+    if ctx.get("number"):
+        badge = f"PR #{ctx['number']}  //  {ctx['repository_url']}"
+    else:
+        badge = f"{ctx['repository_url']}  //  open-source engineering"
+
+    ax.text(0.6, 4.7, badge, color="#94a3b8", fontsize=13, va="center", family="monospace")
     ax.text(0.6, 3.4, title, color="#f8fafc", fontsize=26, va="center",
             family="sans-serif", fontweight="bold", wrap=True)
     ax.text(0.6, 2.0, "Automated technical storytelling  •  powered by GitHub Actions + duck-diff",
@@ -249,13 +305,16 @@ def generate_banner(pr):
 # ---------------------------------------------------------------------------
 # Step 5: Discord dispatch (with banner attachment)
 # ---------------------------------------------------------------------------
-def dispatch_discord(body, comment, banner_path):
+def dispatch_discord(body, banner_path):
     if not DISCORD_WEBHOOK_URL:
         print("[discord] no webhook URL configured; skipping dispatch.")
         return
     print("[discord] dispatching post + banner to webhook...")
     try:
-        message = f"**New technical post ready for {REPO_NAME}:**\n\n{body[:1500]}\n\n```{comment[:300]}```"
+        message = (
+            f"**New technical post ready for {REPO_NAME}:**\n\n"
+            f"{body}\n\nCharacter count: {len(body)} / {MAX_BODY_CHARS}"
+        )
         with open(banner_path, "rb") as f:
             files = {"file": ("banner.png", f, "image/png")}
             payload = {"content": message}
@@ -268,7 +327,7 @@ def dispatch_discord(body, comment, banner_path):
         print(f"[discord] error: {e}")
 
 
-def dispatch_discord_warning(reasons, body, comment):
+def dispatch_discord_warning(reasons, body):
     if not DISCORD_WEBHOOK_URL:
         print("[discord] no webhook URL configured; audit failure not dispatched.")
         return
@@ -277,7 +336,7 @@ def dispatch_discord_warning(reasons, body, comment):
         message = (
             f"**AUDIT FAILED - post NOT published to LinkedIn.**\n\n"
             f"Failure reasons:\n" + "\n".join(f"- {r}" for r in reasons) +
-            f"\n\n**Draft:**\n{body[:1500]}\n\n```{comment[:300]}```"
+            f"\n\n**Draft:**\n{body[:1500]}\n\nCharacter count: {len(body)}"
         )
         resp = requests.post(DISCORD_WEBHOOK_URL, json={"content": message}, timeout=60)
         if resp.status_code in (200, 204):
@@ -288,7 +347,7 @@ def dispatch_discord_warning(reasons, body, comment):
         print(f"[discord] error sending warning: {e}")
 
 
-def dispatch_discord_success(post_urn, banner_path):
+def dispatch_discord_success(post_urn, banner_path, body):
     if not DISCORD_WEBHOOK_URL:
         print("[discord] no webhook URL configured; success not dispatched.")
         return
@@ -297,7 +356,9 @@ def dispatch_discord_success(post_urn, banner_path):
         message = (
             f"**Publish confirmed - live on LinkedIn.**\n\n"
             f"Post URN: `{post_urn}`\n"
-            f"Preview: https://www.linkedin.com/feed/update/{post_urn}"
+            f"Live URL: https://www.linkedin.com/feed/update/{post_urn}\n"
+            f"Character count: {len(body)} / {MAX_BODY_CHARS}\n\n"
+            f"Banner preview attached."
         )
         with open(banner_path, "rb") as f:
             files = {"file": ("banner.png", f, "image/png")}
@@ -390,42 +451,45 @@ def publish_linkedin(body, banner_path):
 def main():
     print(f"[pipeline] AUTO_PUBLISH={AUTO_PUBLISH}")
 
-    pr = get_pr()
-    print(f"[pipeline] PR: {pr['title']} -> {pr['html_url']}")
+    pr = get_recent_pr()
+    ctx = get_topic_context(pr)
+    print(f"[pipeline] content: {ctx['mode']} - {ctx['title']} -> {ctx['html_url']}")
 
-    body = generate_post(pr)
+    body = generate_post(ctx)
     if not body:
         print("ERROR: draft generation failed across all free models; aborting.")
         sys.exit(1)
+
+    body = append_footer(body, ctx)
 
     print("\n==================== GENERATED LINKEDIN POST ====================\n")
     print(body)
     print("\n==================================================================\n")
 
-    passed, reasons = run_automated_audit(body, pr["html_url"])
+    passed, reasons = run_automated_audit(body, ctx["html_url"])
     if not passed:
         print("[pipeline] Audit FAILED. Aborting LinkedIn publishing cleanly.")
-        dispatch_discord_warning(reasons, body, pr["html_url"])
+        dispatch_discord_warning(reasons, body)
         sys.exit(0)
 
     print("[pipeline] Audit PASSED. Proceeding to banner + publishing stage.")
-    banner_path = generate_banner(pr)
+    banner_path = generate_banner(ctx)
 
     if AUTO_PUBLISH == "true":
         print("[pipeline] AUTO_PUBLISH=true; publishing to LinkedIn...")
         post_urn = publish_linkedin(body, banner_path)
         if post_urn:
             print(f"[pipeline] Publish complete: {post_urn}")
-            dispatch_discord_success(post_urn, banner_path)
+            dispatch_discord_success(post_urn, banner_path, body)
         else:
             print("[pipeline] Publish FAILED; dispatching warning.")
             dispatch_discord_warning(
-                ["LinkedIn publish call failed (see logs above)."], body, pr["html_url"]
+                ["LinkedIn publish call failed (see logs above)."], body
             )
             sys.exit(1)
     else:
         print("[pipeline] AUTO_PUBLISH not enabled; dispatching draft to Discord.")
-        dispatch_discord(body, pr["html_url"], banner_path)
+        dispatch_discord(body, banner_path)
 
 
 if __name__ == "__main__":
