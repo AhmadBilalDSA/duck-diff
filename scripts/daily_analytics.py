@@ -32,6 +32,7 @@ from datetime import datetime, timedelta, timezone
 GITHUB_USERNAME = os.getenv("GH_USERNAME", "") or "AhmadBilalDSA"
 REPO = os.getenv("GITHUB_REPOSITORY", "") or f"{GITHUB_USERNAME}/duck-diff"
 GH_TOKEN = os.getenv("GH_PAT", os.getenv("GITHUB_TOKEN", ""))
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(ROOT, "data")
@@ -79,6 +80,34 @@ def _gh_get(url, params=None):
     except (urllib.error.URLError, OSError, ValueError) as exc:
         print(f"[api] GET {url} error: {exc}")
         return None, None
+
+
+def _notify_discord(message):
+    """POST a text notification to the configured Discord webhook.
+
+    Never raises: the reason is logged when the webhook URL is missing or the
+    HTTP request fails, so notification failures are never silent.
+    """
+    if not DISCORD_WEBHOOK_URL:
+        print("[discord] DISCORD_WEBHOOK_URL is not set; skipping notification.")
+        return False
+    try:
+        body = json.dumps({"content": message}).encode("utf-8")
+        req = urllib.request.Request(
+            DISCORD_WEBHOOK_URL,
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            print(f"[discord] webhook responded {resp.status}; notification delivered.")
+            return True
+    except urllib.error.HTTPError as exc:
+        print(f"[discord] webhook HTTP error {exc.code}: {exc.reason}")
+        return False
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        print(f"[discord] webhook request failed: {exc}")
+        return False
 
 
 def extract_events():
@@ -327,9 +356,10 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except (AttributeError, ValueError):
         pass
-    if _utcnow().hour < 12:
-        return run_morning()
-    return run_evening()
+    phase = "morning" if _utcnow().hour < 12 else "evening"
+    rc = run_morning() if phase == "morning" else run_evening()
+    _notify_discord(f"[duck-diff] {phase} telemetry phase finished (exit code {rc}).")
+    return rc
 
 
 if __name__ == "__main__":
