@@ -248,8 +248,23 @@ def _git(args):
     return proc.returncode
 
 
+def _git_out(args):
+    """Run a git command from the repo root; returns (returncode, stdout) or (None, None)."""
+    try:
+        proc = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"[git] error running git {' '.join(args)}: {exc}")
+        return None, None
+    if proc.returncode != 0:
+        print(f"[git] git {' '.join(args)} -> {proc.returncode}: {proc.stderr.strip()[:200]}")
+    return proc.returncode, proc.stdout
+
+
 def commit_and_push(file_rel, message):
     """Stage only the targeted data/ file, commit with [skip ci], then push.
+
+    Instead of rejecting a dirty workspace, only the target data/ file is ever
+    staged and committed; unrelated uncommitted changes are left untouched.
 
     Returns True when the call completed (including clean skip or local dry-run);
     False when a hard failure occurred (git unavailable or commit rejected).
@@ -257,9 +272,12 @@ def commit_and_push(file_rel, message):
     if os.environ.get("CI") != "true":
         print(f"[git] local run detected; not committing (would stage {file_rel} with '{message}').")
         return True
-    if _git(["diff", "--quiet"]) not in (0, None):
-        print("[git] working tree is dirty; refusing to autocommit.")
+    rc, status = _git_out(["status", "--porcelain", "data/"])
+    if rc is None:
         return False
+    if file_rel not in status.split():
+        print(f"[git] no changes for {file_rel} in data/; nothing to commit.")
+        return True
     if _git(["config", "user.name", GIT_USER]) != 0:
         return False
     if _git(["config", "user.email", GIT_EMAIL]) != 0:
