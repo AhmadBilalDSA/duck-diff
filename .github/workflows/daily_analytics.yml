@@ -24,4 +24,5 @@ jobs:
       - name: Run daily telemetry snapshot / metrics append
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: python scripts/daily_analytics.py
