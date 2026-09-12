@@ -289,6 +289,12 @@ def commit_and_push(file_rel, message):
         return True
     if _git(["commit", "-m", message]) != 0:
         return False
+    rc, _ = _git_out(["pull", "--rebase", "origin", "main"])
+    if rc != 0:
+        print("[git] pull --rebase failed (remote updates conflict with local commit); aborting rebase.")
+        _git(["rebase", "--abort"])
+        print("[git] commit remains local; no push attempted.")
+        return False
     if _git(["push", "origin", "HEAD"]) != 0:
         print("[git] push failed; commit remains local.")
         return False
