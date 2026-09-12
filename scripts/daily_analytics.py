@@ -96,7 +96,10 @@ def _notify_discord(message):
         req = urllib.request.Request(
             DISCORD_WEBHOOK_URL,
             data=body,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "Mozilla/5.0 (compatible; DuckDiffBot/1.0; +https://github.com/AhmadBilalDSA/duck-diff)",
+            },
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=15) as resp:
