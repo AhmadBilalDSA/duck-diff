@@ -43,8 +43,10 @@ CSV_HEADERS = ["Date", "Commits", "PRs_Opened", "PRs_Reviewed", "Issues"]
 MORNING_COMMIT = "data(portfolio): snapshot upstream pr & ci health [skip ci]"
 EVENING_COMMIT = "chore(telemetry): append daily engineering metrics [skip ci]"
 
-GIT_USER = "github-actions[bot]"
-GIT_EMAIL = "41898282+github-actions[bot]@users.noreply.github.com"
+GIT_USER = "Ahmad Bilal"
+GIT_EMAIL = "kierninja@gmail.com"
+
+LAST_COMMIT_DIFF = ""
 
 EVENTS_URL = f"https://api.github.com/users/{GITHUB_USERNAME}/events/public"
 REPO_URL = f"https://api.github.com/repos/{REPO}"
@@ -301,6 +303,7 @@ def commit_and_push(file_rel, message):
     Returns True when the call completed (including clean skip or local dry-run);
     False when a hard failure occurred (git unavailable or commit rejected).
     """
+    global LAST_COMMIT_DIFF
     if os.environ.get("CI") != "true":
         print(f"[git] local run detected; not committing (would stage {file_rel} with '{message}').")
         return True
@@ -331,6 +334,9 @@ def commit_and_push(file_rel, message):
         print("[git] push failed; commit remains local.")
         return False
     print(f"[git] committed and pushed: {message}")
+    diff_rc, diff_text = _git_out(["show", "--pretty=format:", "HEAD", "--", file_rel])
+    if diff_rc == 0 and diff_text.strip():
+        LAST_COMMIT_DIFF = diff_text.strip()
     return True
 
 
@@ -361,7 +367,8 @@ def main():
         pass
     phase = "morning" if _utcnow().hour < 12 else "evening"
     rc = run_morning() if phase == "morning" else run_evening()
-    _notify_discord(f"[duck-diff] {phase} telemetry phase finished (exit code {rc}).")
+    diff_note = f"\n```diff\n{LAST_COMMIT_DIFF[:1500]}\n```" if LAST_COMMIT_DIFF else ""
+    _notify_discord(f"[duck-diff] {phase} telemetry phase finished (exit code {rc}).{diff_note}")
     return rc
 
 
