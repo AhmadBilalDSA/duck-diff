@@ -13,10 +13,11 @@ starts instantly with zero dependency-install lag. Every file read/write is
 confined to the repository's data/ directory; duck_diff/, tests, and config
 files are never touched.
 
-Skip guard: if the metrics are unchanged, or the current phase is already
-recorded for today, the script exits 0 immediately without any git commit or
-push. When a change is real, only the targeted data/ file is staged and
-committed with a phase-specific [skip ci] message before pushing.
+Guaranteed commit: the morning phase always rewrites data/portfolio_status.json
+with a fresh 'as_of' timestamp on every run, so a diff is guaranteed even when
+external metrics are unchanged. Only the targeted data/ file is staged and
+committed with a phase-specific [skip ci] message before pushing, so the
+contribution graph stays green every day.
 """
 
 import csv
@@ -172,11 +173,6 @@ def transform(events):
     }
 
 
-def _stable_snapshot(payload):
-    """Return snapshot fields excluding the transient 'as_of' timestamp."""
-    return {k: v for k, v in payload.items() if k != "as_of"}
-
-
 def _fetch_ci_health():
     runs_data, _ = _gh_get(RUNS_URL, {"per_page": 5})
     if not isinstance(runs_data, dict):
@@ -191,20 +187,14 @@ def _fetch_ci_health():
 
 
 def snapshot_portfolio():
-    """Morning phase: snapshot PR + CI health into data/portfolio_status.json."""
+    """Morning phase: snapshot PR + CI health into data/portfolio_status.json.
+
+    Unconditionally rewrites the file with a fresh 'as_of' timestamp on every
+    run so a guaranteed diff always exists to commit, keeping the contribution
+    graph green even when external metrics are unchanged.
+    """
     now = _utcnow()
     date_str = now.strftime("%Y-%m-%d")
-    existing = {}
-    if os.path.isfile(PORTFOLIO_PATH):
-        try:
-            with open(PORTFOLIO_PATH, "r", encoding="utf-8") as f:
-                existing = json.load(f)
-        except (OSError, ValueError) as exc:
-            print(f"[portfolio] read error: {exc}")
-
-    if isinstance(existing, dict) and existing.get("date") == date_str:
-        print(f"[portfolio] {date_str} already snapshotted (idempotent); skipping early.")
-        return 0, False
 
     payload = {
         "date": date_str,
@@ -216,10 +206,6 @@ def snapshot_portfolio():
         payload["open_pull_requests"] = repo_data.get("open_pulls_count")
         payload["open_issues"] = repo_data.get("open_issues_count")
     payload["ci_health"] = _fetch_ci_health()
-
-    if isinstance(existing, dict) and _stable_snapshot(existing) == _stable_snapshot(payload):
-        print("[portfolio] no metrics changed; skipping.")
-        return 0, False
 
     os.makedirs(DATA_DIR, exist_ok=True)
     try:
@@ -322,7 +308,7 @@ def commit_and_push(file_rel, message):
     if _git(["diff", "--cached", "--quiet"]) == 0:
         print(f"[git] {file_rel} has no staged changes; skipping commit.")
         return True
-    if _git(["commit", "-m", message]) != 0:
+    if _git(["commit", "-m", message, f"--author={GIT_USER} <{GIT_EMAIL}>"]) != 0:
         return False
     rc, _ = _git_out(["pull", "--rebase", "origin", "main"])
     if rc != 0:
@@ -330,7 +316,7 @@ def commit_and_push(file_rel, message):
         _git(["rebase", "--abort"])
         print("[git] commit remains local; no push attempted.")
         return False
-    if _git(["push", "origin", "HEAD"]) != 0:
+    if _git(["push", "origin", "main"]) != 0:
         print("[git] push failed; commit remains local.")
         return False
     print(f"[git] committed and pushed: {message}")

@@ -2,7 +2,7 @@ name: Daily Analytics ELT Pipeline
 
 on:
   schedule:
-    - cron: '0 6,18 * * *'
+    - cron: '0 2,14 * * *'
   workflow_dispatch:
 
 concurrency:
@@ -17,7 +17,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.ref_name }}
+          ref: main
           fetch-depth: 0
       - uses: actions/setup-python@v4
         with:
